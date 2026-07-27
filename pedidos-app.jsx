@@ -1200,11 +1200,17 @@ export default function PedidosApp() {
     deletePersonal(SESION_KEY);
   }, []);
 
-  // Asigna el correo de la sesión actual al comprador elegido
+  // Asigna el correo de la sesión actual al comprador elegido.
+  // Si es el primero en vincularse, lo marca como admin.
   const handleVincular = useCallback((compradorId) => {
     const correo = (sesionAuth?.user?.email || '').trim().toLowerCase();
     if (!correo) return;
-    const next = usuarios.map(u => u.id === compradorId ? { ...u, email: correo } : u);
+    const ningunoVinculado = usuarios.every(u => !u.email);
+    const next = usuarios.map(u =>
+      u.id === compradorId
+        ? { ...u, email: correo, esAdmin: ningunoVinculado ? true : u.esAdmin }
+        : u
+    );
     persistUsuarios(next);
   }, [sesionAuth, usuarios, persistUsuarios]);
 
@@ -1240,6 +1246,14 @@ export default function PedidosApp() {
       (u) => (u.email || '').trim().toLowerCase() === correo
     );
     if (encontrado) {
+      // Si nadie tiene esAdmin aún, promover al primero que entre
+      const hayAdmin = usuarios.some(u => u.esAdmin);
+      if (!encontrado.esAdmin && !hayAdmin) {
+        const next = usuarios.map(u => u.id === encontrado.id ? { ...u, esAdmin: true } : u);
+        setUsuarios(next);
+        saveShared(KEYS.usuarios, next);
+        return; // el efecto se re-ejecuta con el usuario actualizado
+      }
       if (usuarioActivo?.id !== encontrado.id) setUsuarioActivo(encontrado);
       return;
     }
