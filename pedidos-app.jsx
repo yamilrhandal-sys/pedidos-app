@@ -4,6 +4,7 @@ import {
   ChevronDown, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, ScanLine, BarChart3, Copy,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { createClient } from '@supabase/supabase-js';
 
 // ============================================================
 // SHIM DE ALMACENAMIENTO — Puente window.storage -> localStorage
@@ -590,205 +591,199 @@ function BotonBorrar({ onConfirm, size = 14, texto = null, icono = 'trash', avis
   );
 }
 
-function PantallaLogin({ usuarios, onLogin, onCrearPrimero, ultimoNombre }) {
-  const [nombreLogin, setNombreLogin] = useState(ultimoNombre || '');
-  const [pin, setPin] = useState('');
+// ============================================================
+// CLIENTE DE SUPABASE
+// ------------------------------------------------------------
+// Vite solo expone variables que empiezan con VITE_.
+// En Vercel deben llamarse: VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY
+// ============================================================
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_CONFIGURADO = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+const supabase = SUPABASE_CONFIGURADO
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+// Pantalla de aviso si faltan las variables de entorno
+function PantallaSinConfigurar() {
+  return (
+    <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center px-6 font-sans">
+      <style>{APP_STYLES}</style>
+      <div className="w-full max-w-md bg-app-panel border border-app-line rounded-app-lg p-8 space-y-3 text-center">
+        <p className="text-4xl">⚙️</p>
+        <h1 className="text-lg font-bold text-app-white">Falta configurar Supabase</h1>
+        <p className="text-sm text-app-dim2">
+          En Vercel → Settings → Environment Variables hay que agregar:
+        </p>
+        <div className="bg-app-bg rounded-app p-3 text-left text-xs text-app-gold font-mono">
+          VITE_SUPABASE_URL<br />VITE_SUPABASE_ANON_KEY
+        </div>
+        <p className="text-xs text-app-dim">
+          Después hay que hacer Redeploy para que tomen efecto.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PANTALLA DE LOGIN — Supabase Auth (correo + contraseña)
+// ------------------------------------------------------------
+// Reemplaza el login por PIN. La contraseña vive cifrada en el
+// servidor de Supabase; la app nunca la ve ni la guarda.
+// ============================================================
+function PantallaLogin() {
+  const [correo, setCorreo] = useState('');
+  const [clave, setClave] = useState('');
+  const [verClave, setVerClave] = useState(false);
   const [error, setError] = useState('');
-  const [intentando, setIntentando] = useState(false);
-  const [sugerencias, setSugerencias] = useState([]);
-  const [mostrandoSug, setMostrandoSug] = useState(false);
-  // Para crear el primer usuario
-  const [nombre, setNombre] = useState('');
-  const [pinNuevo, setPinNuevo] = useState('');
-  const [pinConfirm, setPinConfirm] = useState('');
-  const [creando, setCreando] = useState(false);
+  const [aviso, setAviso] = useState('');
+  const [ocupado, setOcupado] = useState(false);
+  const [modoReset, setModoReset] = useState(false);
 
-  const esPrimerUsuario = usuarios.length === 0;
+  const correoValido = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((v || '').trim());
 
-  // Buscar el usuario por nombre (case-insensitive, trim)
-  const encontrarUsuario = (nombreBuscado) => {
-    const q = (nombreBuscado || '').trim().toLowerCase();
-    if (!q) return null;
-    return usuarios.find((u) => (u.nombre || '').trim().toLowerCase() === q) || null;
-  };
-
-  // Actualiza sugerencias mientras el usuario escribe (para ayuda visual, no obligatorio)
-  useEffect(() => {
-    const q = (nombreLogin || '').trim().toLowerCase();
-    if (!q || q.length < 2) { setSugerencias([]); return; }
-    // No mostrar sugerencias si ya coincide exacto
-    if (usuarios.some((u) => (u.nombre || '').trim().toLowerCase() === q)) { setSugerencias([]); return; }
-    const filtrados = usuarios
-      .filter((u) => (u.nombre || '').toLowerCase().includes(q))
-      .slice(0, 5);
-    setSugerencias(filtrados);
-  }, [nombreLogin, usuarios]);
-
-  const intentarLogin = async () => {
-    setError('');
-    const usuario = encontrarUsuario(nombreLogin);
-    if (!usuario) {
-      setError(`No existe un usuario llamado "${nombreLogin.trim()}". Pídele al administrador que te agregue.`);
-      return;
-    }
-    // Sin PIN configurado: entra directo
-    if (!usuario.pinHash) {
-      onLogin(usuario);
-      return;
-    }
-    if (pin.length < 4) {
-      setError('Escribe tu PIN.');
-      return;
-    }
-    setIntentando(true);
-    const hash = await hashPin(pin);
-    setIntentando(false);
-    if (hash === usuario.pinHash) {
-      onLogin(usuario);
-    } else {
-      setError('PIN incorrecto.');
-      setPin('');
+  const entrar = async () => {
+    setError(''); setAviso('');
+    if (!correoValido(correo)) return setError('Escribe un correo válido.');
+    if (!clave) return setError('Escribe tu contraseña.');
+    setOcupado(true);
+    try {
+      const { error: err } = await supabase.auth.signInWithPassword({
+        email: correo.trim().toLowerCase(),
+        password: clave,
+      });
+      if (err) {
+        const m = (err.message || '').toLowerCase();
+        if (m.includes('invalid login')) setError('Correo o contraseña incorrectos.');
+        else if (m.includes('not confirmed')) setError('Tu correo aún no está confirmado. Revisa tu bandeja de entrada.');
+        else setError(err.message);
+      }
+    } catch (e) {
+      setError('No se pudo conectar. Revisa tu conexión.');
+    } finally {
+      setOcupado(false);
     }
   };
 
-  const crearPrimerUsuario = async () => {
-    setError('');
-    const n = nombre.trim();
-    if (!n) return setError('Escribe tu nombre.');
-    if (!/^\d{4,6}$/.test(pinNuevo)) return setError('El PIN debe ser de 4 a 6 dígitos.');
-    if (pinNuevo !== pinConfirm) return setError('Los PIN no coinciden.');
-    setCreando(true);
-    const pinHash = await hashPin(pinNuevo);
-    onCrearPrimero({ id: uid(), nombre: n, pinHash });
+  const enviarReset = async () => {
+    setError(''); setAviso('');
+    if (!correoValido(correo)) return setError('Escribe un correo válido.');
+    setOcupado(true);
+    try {
+      const { error: err } = await supabase.auth.resetPasswordForEmail(correo.trim().toLowerCase());
+      if (err) setError(err.message);
+      else setAviso('Te enviamos un correo para restablecer tu contraseña.');
+    } catch (e) {
+      setError('No se pudo enviar el correo.');
+    } finally {
+      setOcupado(false);
+    }
   };
-
-  // Si el usuario tipeado NO tiene PIN, ocultar el campo PIN
-  const usuarioTipeado = encontrarUsuario(nombreLogin);
-  const necesitaPin = !!(usuarioTipeado && usuarioTipeado.pinHash);
-  const puedeEntrarSinPin = !!(usuarioTipeado && !usuarioTipeado.pinHash);
 
   return (
-    <div className="min-h-screen bg-app-bg text-app-white flex flex-col items-center justify-center px-6 font-sans">
+    <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center px-6 font-sans">
       <style>{APP_STYLES}</style>
-      <div className="w-full max-w-sm bg-app-panel border border-app-line rounded-app-lg shadow-app-lg p-8 space-y-6">
+      <div className="w-full max-w-sm bg-app-panel border border-app-line rounded-app-lg p-8 space-y-5">
         <div className="text-center">
-          <p className="text-3xl mb-2">🛍</p>
-          <h1 className="text-xl font-bold">Pedidos</h1>
-          <p className="text-xs text-app-dim2 mt-1">
-            {esPrimerUsuario ? 'Crea el primer usuario para empezar' : 'Ingresa tu nombre y PIN'}
+          <p className="text-4xl mb-2">🛍️</p>
+          <h1 className="text-2xl font-bold text-app-white">Pedidos</h1>
+          <p className="text-xs text-app-dim mt-1">
+            {modoReset ? 'Te enviaremos un correo para restablecerla' : 'Ingresa con tu correo y contraseña'}
           </p>
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 bg-app-redbg text-app-red2 text-xs rounded-lg px-3 py-2">
-            <AlertCircle size={14} className="shrink-0" /> {error}
+          <div className="flex items-start gap-2 bg-app-redbg text-app-red2 text-xs rounded-app px-3 py-2">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" /> <span>{error}</span>
           </div>
         )}
+        {aviso && (
+          <div className="bg-app-green text-app-green text-xs rounded-app px-3 py-2">{aviso}</div>
+        )}
 
-        {esPrimerUsuario ? (
-          <div className="space-y-3">
-            <input
-              placeholder="Tu nombre (ej. Yamil Handal)"
-              value={nombre}
-              onChange={(e) => setNombre(e.target.value)}
-              className="w-full bg-app-panel border border-app-line rounded-xl px-4 py-3 text-sm"
-            />
-            <input
-              placeholder="PIN (4 a 6 dígitos)"
-              type="password"
-              inputMode="numeric"
-              maxLength={6}
-              value={pinNuevo}
-              onChange={(e) => setPinNuevo(e.target.value.replace(/\D/g, ''))}
-              className="w-full bg-app-panel border border-app-line rounded-xl px-4 py-3 text-sm text-center tracking-widest"
-            />
-            <input
-              placeholder="Confirma tu PIN"
-              type="password"
-              inputMode="numeric"
-              maxLength={6}
-              value={pinConfirm}
-              onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, ''))}
-              className="w-full bg-app-panel border border-app-line rounded-xl px-4 py-3 text-sm text-center tracking-widest"
-            />
-            <button
-              onClick={crearPrimerUsuario}
-              disabled={creando}
-              className="w-full py-3.5 rounded-xl bg-app-gold text-app-bg font-semibold text-sm disabled:opacity-50"
-            >
-              {creando ? 'Creando…' : 'Crear usuario y entrar'}
-            </button>
-            <p className="text-xs text-app-dim text-center">Después podrás dar de alta a tu equipo desde Configuración.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {/* Campo Nombre */}
+        <div className="space-y-3">
+          <input
+            type="email"
+            inputMode="email"
+            autoComplete="username"
+            placeholder="tu.correo@carrion.hn"
+            value={correo}
+            onChange={(e) => setCorreo(e.target.value)}
+            disabled={ocupado}
+            className="w-full bg-app-bg border border-app-line rounded-app px-4 py-3 text-sm text-app-white"
+          />
+
+          {!modoReset && (
             <div className="relative">
               <input
-                autoFocus={!ultimoNombre}
-                placeholder="Tu nombre"
-                value={nombreLogin}
-                onChange={(e) => { setNombreLogin(e.target.value); setError(''); setMostrandoSug(true); }}
-                onFocus={() => setMostrandoSug(true)}
-                onBlur={() => setTimeout(() => setMostrandoSug(false), 200)}
-                onKeyDown={(e) => { if (e.key === 'Enter') intentarLogin(); }}
-                className="w-full bg-app-panel border border-app-line rounded-xl px-4 py-3.5 text-sm"
+                type={verClave ? 'text' : 'password'}
+                autoComplete="current-password"
+                placeholder="Contraseña"
+                value={clave}
+                onChange={(e) => setClave(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') entrar(); }}
+                disabled={ocupado}
+                className="w-full bg-app-bg border border-app-line rounded-app px-4 py-3 pr-16 text-sm text-app-white"
               />
-              {/* Sugerencias flotantes */}
-              {mostrandoSug && sugerencias.length > 0 && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-app-panel border border-app-line rounded-xl shadow-lg z-10 overflow-hidden">
-                  {sugerencias.map((u) => (
-                    <button
-                      key={u.id}
-                      onClick={() => { setNombreLogin(u.nombre); setMostrandoSug(false); }}
-                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-app-active active:bg-app-active border-b border-app-line last:border-b-0 text-left"
-                    >
-                      <span className="w-6 h-6 rounded-full bg-app-goldbg text-app-gold flex items-center justify-center font-bold text-xs shrink-0">
-                        {u.nombre.charAt(0).toUpperCase()}
-                      </span>
-                      <span className="text-xs">
-                        {u.numero && <span className="text-app-dim2 mr-1.5">#{u.numero}</span>}
-                        {u.nombre}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => setVerClave((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-app-dim2"
+              >
+                {verClave ? 'Ocultar' : 'Ver'}
+              </button>
             </div>
+          )}
 
-            {/* Campo PIN — se muestra siempre, pero se avisa si no aplica */}
-            {necesitaPin && (
-              <input
-                autoFocus={!!ultimoNombre}
-                placeholder="PIN"
-                type="password"
-                inputMode="numeric"
-                maxLength={6}
-                value={pin}
-                onChange={(e) => { setPin(e.target.value.replace(/\D/g, '')); setError(''); }}
-                onKeyDown={(e) => { if (e.key === 'Enter') intentarLogin(); }}
-                className="w-full bg-app-panel border border-app-line rounded-xl px-4 py-3.5 text-lg text-center tracking-widest"
-              />
-            )}
-            {puedeEntrarSinPin && (
-              <p className="text-xs text-app-gold text-center">
-                Este usuario no tiene PIN configurado. Presiona Entrar directamente.
-              </p>
-            )}
+          <button
+            onClick={modoReset ? enviarReset : entrar}
+            disabled={ocupado}
+            className="w-full py-3 rounded-app bg-app-gold text-app-bg font-semibold text-sm disabled:opacity-50"
+          >
+            {ocupado ? 'Un momento…' : (modoReset ? 'Enviar correo' : 'Entrar')}
+          </button>
+        </div>
 
-            <button
-              onClick={intentarLogin}
-              disabled={intentando || !nombreLogin.trim()}
-              className="w-full py-3.5 rounded-xl bg-app-gold text-app-bg font-semibold text-sm disabled:opacity-50"
-            >
-              {intentando ? 'Entrando…' : 'Entrar'}
-            </button>
+        <button
+          onClick={() => { setModoReset((v) => !v); setError(''); setAviso(''); }}
+          className="w-full text-xs text-app-dim2 text-center py-1"
+        >
+          {modoReset ? '← Volver' : '¿Olvidaste tu contraseña?'}
+        </button>
 
-            <p className="text-xs text-app-dim text-center">
-              Si no recuerdas tu PIN, pídele al administrador que te lo asigne de nuevo.
-            </p>
-          </div>
-        )}
+        <p className="text-xs text-app-dim text-center border-t border-app-line pt-4">
+          Si no tienes cuenta, pídele al administrador que te dé de alta.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PANTALLA VINCULAR — la cuenta entró pero no es ningún comprador
+// ============================================================
+function PantallaVincular({ correo, onSalir }) {
+  return (
+    <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center px-6 font-sans">
+      <style>{APP_STYLES}</style>
+      <div className="w-full max-w-sm bg-app-panel border border-app-line rounded-app-lg p-8 space-y-4 text-center">
+        <p className="text-4xl">🔗</p>
+        <h1 className="text-lg font-bold text-app-white">Cuenta sin vincular</h1>
+        <p className="text-sm text-app-dim2">
+          Entraste como <span className="text-app-gold">{correo}</span>, pero ese correo no está
+          asignado a ningún comprador.
+        </p>
+        <p className="text-xs text-app-dim">
+          Pídele al administrador que agregue tu correo en Administración → Compradores.
+        </p>
+        <button
+          onClick={onSalir}
+          className="w-full py-3 rounded-app bg-app-active text-app-white font-semibold text-sm"
+        >
+          Salir
+        </button>
       </div>
     </div>
   );
@@ -1005,6 +1000,8 @@ export default function PedidosApp() {
   const [factores, setFactores] = useState({ china: 32, usa: 22, panama: 18, honduras: 1 });
   const [borradores, setBorradores] = useState({}); // { china: {...}, usa: {...}, panama: {...} }
   const [usuarioActivo, setUsuarioActivo] = useState(null);
+  const [sesionAuth, setSesionAuth] = useState(null);   // sesion de Supabase
+  const [authCargando, setAuthCargando] = useState(true);
   const [ultimoNombreLogin, setUltimoNombreLogin] = useState('');
   // Modo de visualización: 'auto' (responsive) o 'movil' (forzar vista compacta en PC)
   const [modoVista, setModoVista] = useState('auto');
@@ -1063,11 +1060,8 @@ export default function PedidosApp() {
       if (bo && typeof bo === 'object') setBorradores(bo);
       if (modoGuardado === 'movil' || modoGuardado === 'auto') setModoVista(modoGuardado);
       if (ultimoUsuario && ultimoUsuario.nombre) setUltimoNombreLogin(ultimoUsuario.nombre);
-      // Restaurar sesión recordada de este dispositivo si el usuario aún existe
-      if (sesion?.usuarioId) {
-        const u = listaUsuarios.find((x) => x.id === sesion.usuarioId);
-        if (u) setUsuarioActivo(u);
-      }
+      // La sesión ahora la maneja Supabase Auth (ver efecto más abajo).
+      // Ya no se restaura por usuarioId guardado en el dispositivo.
       setLoading(false);
     })();
   }, []);
@@ -1170,25 +1164,66 @@ export default function PedidosApp() {
     });
   }, [guardarConCola]);
 
-  const handleLogin = useCallback((usuario) => {
-    setUsuarioActivo(usuario);
-    savePersonal(SESION_KEY, { usuarioId: usuario.id });
-    savePersonal(ULTIMO_USUARIO_KEY, { nombre: usuario.nombre });
-  }, []);
-
-  const handleCrearPrimerUsuario = useCallback((usuario) => {
-    const next = [usuario];
-    setUsuarios(next);
-    saveShared(KEYS.usuarios, next);
-    setUsuarioActivo(usuario);
-    savePersonal(SESION_KEY, { usuarioId: usuario.id });
-    savePersonal(ULTIMO_USUARIO_KEY, { nombre: usuario.nombre });
-  }, []);
-
-  const handleLogout = useCallback(() => {
+  // Cierra la sesión en Supabase. El efecto de autenticación limpia el resto.
+  const handleLogout = useCallback(async () => {
+    try { if (supabase) await supabase.auth.signOut(); } catch (e) { /* ignorar */ }
     setUsuarioActivo(null);
+    setSesionAuth(null);
     deletePersonal(SESION_KEY);
   }, []);
+
+  // ---------- Autenticación con Supabase ----------
+  // 1) Al abrir la app: leer la sesión guardada y quedar atento a cambios
+  useEffect(() => {
+    if (!supabase) { setAuthCargando(false); return; }
+    let vivo = true;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (vivo) setSesionAuth(data?.session || null);
+      } catch (e) {
+        console.error('Error leyendo sesión', e);
+      } finally {
+        if (vivo) setAuthCargando(false);
+      }
+    })();
+    const { data: sub } = supabase.auth.onAuthStateChange((_evento, sesion) => {
+      setSesionAuth(sesion || null);
+      if (!sesion) setUsuarioActivo(null);
+    });
+    return () => { vivo = false; sub?.subscription?.unsubscribe(); };
+  }, []);
+
+  // 2) Vincular la sesión con el comprador que tenga ese correo
+  useEffect(() => {
+    if (loading || !sesionAuth) return;
+    const correo = (sesionAuth.user?.email || '').trim().toLowerCase();
+    if (!correo) return;
+
+    const encontrado = usuarios.find(
+      (u) => (u.email || '').trim().toLowerCase() === correo
+    );
+    if (encontrado) {
+      if (usuarioActivo?.id !== encontrado.id) setUsuarioActivo(encontrado);
+      return;
+    }
+
+    // Primer arranque: si no hay ningún comprador, este correo se vuelve el administrador
+    if (usuarios.length === 0 && !usuarioActivo) {
+      const primero = {
+        id: uid(),
+        numero: 1,
+        nombre: correo.split('@')[0],
+        prefijo: '',
+        email: correo,
+        esAdmin: true,
+      };
+      const next = [primero];
+      setUsuarios(next);
+      saveShared(KEYS.usuarios, next);
+      setUsuarioActivo(primero);
+    }
+  }, [sesionAuth, usuarios, loading, usuarioActivo]);
 
   const toggleModoVista = useCallback(() => {
     setModoVista((prev) => {
@@ -1234,14 +1269,29 @@ export default function PedidosApp() {
     );
   }
 
-  // Gate de acceso: sin usuario no se puede usar la app
+  // Gate de acceso
+  // 1) Faltan las variables de entorno de Supabase
+  if (!SUPABASE_CONFIGURADO) return <PantallaSinConfigurar />;
+
+  // 2) Todavía verificando si hay sesión guardada
+  if (authCargando) {
+    return (
+      <div className="min-h-screen bg-app-bg flex items-center justify-center font-sans">
+        <style>{APP_STYLES}</style>
+        <p className="text-app-dim2 text-sm">Cargando…</p>
+      </div>
+    );
+  }
+
+  // 3) Sin sesión: pedir correo y contraseña
+  if (!sesionAuth) return <PantallaLogin />;
+
+  // 4) Con sesión pero el correo no corresponde a ningún comprador
   if (!usuarioActivo) {
     return (
-      <PantallaLogin
-        usuarios={usuarios}
-        onLogin={handleLogin}
-        onCrearPrimero={handleCrearPrimerUsuario}
-        ultimoNombre={ultimoNombreLogin}
+      <PantallaVincular
+        correo={sesionAuth.user?.email || ''}
+        onSalir={handleLogout}
       />
     );
   }
@@ -5961,8 +6011,11 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
   const [numero, setNumero] = useState('');
   const [nombre, setNombre] = useState('');
   const [prefijo, setPrefijo] = useState('');
+  const [correo, setCorreo] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
+  const [editandoCorreoId, setEditandoCorreoId] = useState(null);
+  const [editCorreo, setEditCorreo] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [confirmCarga, setConfirmCarga] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
@@ -6013,10 +6066,14 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
       setGuardando(true);
       pinHash = await hashPin(pin);
     }
-    setUsuarios([...usuarios, { id: uid(), numero: num ? parseInt(num, 10) : null, nombre: n, prefijo: pref || null, pinHash }]);
+    const mail = correo.trim().toLowerCase();
+    if (mail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return setError('El correo no es válido.');
+    if (mail && usuarios.some((u) => (u.email || '').toLowerCase() === mail)) return setError('Ya hay un comprador con ese correo.');
+    setUsuarios([...usuarios, { id: uid(), numero: num ? parseInt(num, 10) : null, nombre: n, prefijo: pref || null, email: mail || null, pinHash }]);
     setNumero('');
     setNombre('');
     setPrefijo('');
+    setCorreo('');
     setPin('');
     setGuardando(false);
   };
@@ -6024,6 +6081,24 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
   const eliminar = (u) => {
     if (u.id === usuarioActivo?.id) return; // no puedes eliminarte a ti mismo
     setUsuarios(usuarios.filter((x) => x.id !== u.id));
+  };
+
+  const abrirEdicionCorreo = (u) => {
+    setEditandoCorreoId(u.id);
+    setEditCorreo(u.email || '');
+    setError('');
+  };
+
+  const guardarCorreo = (u) => {
+    const mail = editCorreo.trim().toLowerCase();
+    if (mail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return setError('El correo no es válido.');
+    if (mail && usuarios.some((x) => x.id !== u.id && (x.email || '').toLowerCase() === mail)) {
+      return setError('Ese correo ya está asignado a otro comprador.');
+    }
+    setUsuarios(usuarios.map((x) => (x.id === u.id ? { ...x, email: mail || null } : x)));
+    setEditandoCorreoId(null);
+    setEditCorreo('');
+    setError('');
   };
 
   const abrirEdicionPrefijo = (u) => {
@@ -6177,18 +6252,21 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
         <p className="text-xs text-app-dim">Prefijo opcional: 1-3 letras para diferenciar del resto del equipo (ej. F, Fr, Fra). Si lo dejas vacío, se usa la primera letra del nombre.</p>
         <div className="flex gap-2">
           <input
-            placeholder="PIN (opcional)"
-            type="password"
-            inputMode="numeric"
-            maxLength={6}
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+            placeholder="Correo para entrar a la app"
+            type="email"
+            inputMode="email"
+            value={correo}
+            onChange={(e) => setCorreo(e.target.value)}
             className="flex-1 bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm"
           />
           <button onClick={agregar} disabled={guardando} className="px-4 rounded-lg bg-app-gold text-app-bg text-sm font-semibold disabled:opacity-50">
             {guardando ? '…' : 'Alta'}
           </button>
         </div>
+        <p className="text-xs text-app-dim">
+          El correo debe ser el mismo que registres en Supabase → Authentication. Sin correo, el
+          comprador aparece en las listas pero no puede entrar a la app.
+        </p>
       </div>
 
       {/* Lista de usuarios */}
@@ -6248,21 +6326,40 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
                           <AlertCircle size={11} /> Prefijo repetido
                         </span>
                       )}
-                      {!u.pinHash && <span className="text-xs text-app-gold">Sin PIN</span>}
-                      {u.pinHash && <span className="text-xs text-app-dim">PIN configurado</span>}
+                    </div>
+                    {/* Correo de acceso */}
+                    <div className="mt-1">
+                      {editandoCorreoId === u.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            autoFocus
+                            type="email"
+                            value={editCorreo}
+                            onChange={(e) => setEditCorreo(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') guardarCorreo(u); if (e.key === 'Escape') setEditandoCorreoId(null); }}
+                            placeholder="correo@carrion.hn"
+                            className="flex-1 min-w-0 bg-app-bg border border-app-gold rounded px-2 py-0.5 text-xs"
+                          />
+                          <button onClick={() => guardarCorreo(u)} className="text-xs text-app-green font-semibold">✓</button>
+                          <button onClick={() => setEditandoCorreoId(null)} className="text-xs text-app-dim">✕</button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => soyAdmin && abrirEdicionCorreo(u)}
+                          className="text-xs text-left"
+                          title={soyAdmin ? 'Editar correo' : ''}
+                        >
+                          {u.email
+                            ? <span className="text-app-dim2">✉️ {u.email}</span>
+                            : <span className="text-app-gold">✉️ Sin correo — no puede entrar</span>}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {soyAdmin && !cambiandoPin && (
-                    <button
-                      onClick={() => abrirCambioPin(u)}
-                      className="text-xs text-app-sky border border-app-line rounded px-2 py-1 active:bg-app-active"
-                      title={u.pinHash ? 'Cambiar PIN' : 'Asignar PIN'}
-                    >
-                      🔐
-                    </button>
-                  )}
+                  {/* El PIN se retiró: la contraseña ahora la maneja Supabase Auth.
+                      Cada comprador la restablece desde "¿Olvidaste tu contraseña?". */}
                   {u.id !== usuarioActivo?.id && (
                     <BotonBorrar onConfirm={() => eliminar(u)} size={14} />
                   )}
