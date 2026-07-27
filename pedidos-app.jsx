@@ -765,7 +765,7 @@ function PantallaLogin() {
 // PANTALLA VINCULAR — la cuenta entró pero no es ningún comprador
 // ============================================================
 function PantallaVincular({ correo, usuarios = [], onVincular, onSalir }) {
-  const ningunoTieneCorreo = usuarios.length > 0 && usuarios.every(u => !u.email);
+  const sinCorreo = usuarios.filter(u => !u.email);
   const [seleccionado, setSeleccionado] = useState('');
 
   return (
@@ -779,7 +779,7 @@ function PantallaVincular({ correo, usuarios = [], onVincular, onSalir }) {
           asignado a ningún comprador.
         </p>
 
-        {ningunoTieneCorreo ? (
+        {sinCorreo.length > 0 ? (
           <div className="space-y-3 text-left">
             <p className="text-sm text-app-white font-medium text-center">¿Cuál de estos compradores eres?</p>
             <select
@@ -788,8 +788,8 @@ function PantallaVincular({ correo, usuarios = [], onVincular, onSalir }) {
               className="w-full px-3 py-2 rounded-app bg-app-bg border border-app-line text-app-white text-sm"
             >
               <option value="">— Elige tu nombre —</option>
-              {usuarios.map(u => (
-                <option key={u.id} value={u.id}>{u.nombre}</option>
+              {sinCorreo.map(u => (
+                <option key={u.id} value={u.id}>#{u.numero} — {u.nombre}</option>
               ))}
             </select>
             <button
