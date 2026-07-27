@@ -764,7 +764,10 @@ function PantallaLogin() {
 // ============================================================
 // PANTALLA VINCULAR — la cuenta entró pero no es ningún comprador
 // ============================================================
-function PantallaVincular({ correo, onSalir }) {
+function PantallaVincular({ correo, usuarios = [], onVincular, onSalir }) {
+  const ningunoTieneCorreo = usuarios.length > 0 && usuarios.every(u => !u.email);
+  const [seleccionado, setSeleccionado] = useState('');
+
   return (
     <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center px-6 font-sans">
       <style>{APP_STYLES}</style>
@@ -775,12 +778,37 @@ function PantallaVincular({ correo, onSalir }) {
           Entraste como <span className="text-app-gold">{correo}</span>, pero ese correo no está
           asignado a ningún comprador.
         </p>
-        <p className="text-xs text-app-dim">
-          Pídele al administrador que agregue tu correo en Administración → Compradores.
-        </p>
+
+        {ningunoTieneCorreo ? (
+          <div className="space-y-3 text-left">
+            <p className="text-sm text-app-white font-medium text-center">¿Cuál de estos compradores eres?</p>
+            <select
+              value={seleccionado}
+              onChange={e => setSeleccionado(e.target.value)}
+              className="w-full px-3 py-2 rounded-app bg-app-bg border border-app-line text-app-white text-sm"
+            >
+              <option value="">— Elige tu nombre —</option>
+              {usuarios.map(u => (
+                <option key={u.id} value={u.id}>{u.nombre}</option>
+              ))}
+            </select>
+            <button
+              disabled={!seleccionado}
+              onClick={() => onVincular(seleccionado)}
+              className="w-full py-3 rounded-app bg-app-gold text-app-bg font-semibold text-sm disabled:opacity-40"
+            >
+              Soy este comprador
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-app-dim">
+            Pídele al administrador que agregue tu correo en Administración → Compradores.
+          </p>
+        )}
+
         <button
           onClick={onSalir}
-          className="w-full py-3 rounded-app bg-app-active text-app-white font-semibold text-sm"
+          className="w-full text-xs text-app-dim2 text-center py-1"
         >
           Salir
         </button>
@@ -1172,6 +1200,14 @@ export default function PedidosApp() {
     deletePersonal(SESION_KEY);
   }, []);
 
+  // Asigna el correo de la sesión actual al comprador elegido
+  const handleVincular = useCallback((compradorId) => {
+    const correo = (sesionAuth?.user?.email || '').trim().toLowerCase();
+    if (!correo) return;
+    const next = usuarios.map(u => u.id === compradorId ? { ...u, email: correo } : u);
+    persistUsuarios(next);
+  }, [sesionAuth, usuarios, persistUsuarios]);
+
   // ---------- Autenticación con Supabase ----------
   // 1) Al abrir la app: leer la sesión guardada y quedar atento a cambios
   useEffect(() => {
@@ -1291,6 +1327,8 @@ export default function PedidosApp() {
     return (
       <PantallaVincular
         correo={sesionAuth.user?.email || ''}
+        usuarios={usuarios}
+        onVincular={handleVincular}
         onSalir={handleLogout}
       />
     );
