@@ -17,30 +17,71 @@ import { createClient } from '@supabase/supabase-js';
 // por llamadas a supabase.from('...') — el resto del código
 // no necesita ningún cambio.
 // ============================================================
+// ------------------------------------------------------------
+// Storage HÍBRIDO:
+//   • compartido = true  -> Supabase, tabla app_state (todo el equipo ve lo mismo)
+//   • compartido = false -> localStorage (sesión y preferencias de ESTE dispositivo)
+// La API pública (get/set/delete/list) es idéntica a la anterior, así que
+// el resto del código no cambia.
+// ------------------------------------------------------------
 if (typeof window !== 'undefined' && !window.storage) {
-  const prefijo = (compartido) => (compartido ? 'shared:' : 'personal:');
+  // Cliente Supabase propio del storage (las mismas variables VITE_ de Vercel)
+  const _url = import.meta.env.VITE_SUPABASE_URL;
+  const _key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const _sb = (_url && _key) ? createClient(_url, _key) : null;
+
+  const prefijoLocal = 'personal:';
+
   window.storage = {
     async get(clave, compartido = false) {
-      const bruto = localStorage.getItem(prefijo(compartido) + clave);
+      if (compartido && _sb) {
+        const { data, error } = await _sb
+          .from('app_state').select('value').eq('key', clave).maybeSingle();
+        if (error) { console.error('storage.get', error); return null; }
+        if (!data) return null;
+        // value es JSONB; lo devolvemos como string para que JSON.parse funcione igual
+        return { key: clave, value: JSON.stringify(data.value), shared: true };
+      }
+      const bruto = localStorage.getItem(prefijoLocal + clave);
       if (bruto === null) return null;
-      return { key: clave, value: bruto, shared: compartido };
+      return { key: clave, value: bruto, shared: false };
     },
     async set(clave, valor, compartido = false) {
-      localStorage.setItem(prefijo(compartido) + clave, valor);
-      return { key: clave, value: valor, shared: compartido };
+      if (compartido && _sb) {
+        // valor llega como string JSON; lo parseamos para guardarlo como JSONB
+        let parsed;
+        try { parsed = JSON.parse(valor); } catch { parsed = valor; }
+        const { error } = await _sb
+          .from('app_state')
+          .upsert({ key: clave, value: parsed, updated_at: new Date().toISOString() });
+        if (error) console.error('storage.set', error);
+        return { key: clave, value: valor, shared: true };
+      }
+      localStorage.setItem(prefijoLocal + clave, valor);
+      return { key: clave, value: valor, shared: false };
     },
     async delete(clave, compartido = false) {
-      localStorage.removeItem(prefijo(compartido) + clave);
-      return { key: clave, deleted: true, shared: compartido };
+      if (compartido && _sb) {
+        const { error } = await _sb.from('app_state').delete().eq('key', clave);
+        if (error) console.error('storage.delete', error);
+        return { key: clave, deleted: true, shared: true };
+      }
+      localStorage.removeItem(prefijoLocal + clave);
+      return { key: clave, deleted: true, shared: false };
     },
     async list(inicio = '', compartido = false) {
-      const p = prefijo(compartido);
+      if (compartido && _sb) {
+        const { data, error } = await _sb
+          .from('app_state').select('key').like('key', inicio + '%');
+        if (error) { console.error('storage.list', error); return { keys: [], prefix: inicio, shared: true }; }
+        return { keys: (data || []).map((r) => r.key), prefix: inicio, shared: true };
+      }
       const claves = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith(p + inicio)) claves.push(k.slice(p.length));
+        if (k && k.startsWith(prefijoLocal + inicio)) claves.push(k.slice(prefijoLocal.length));
       }
-      return { keys: claves, prefix: inicio, shared: compartido };
+      return { keys: claves, prefix: inicio, shared: false };
     },
   };
 }
