@@ -25,15 +25,16 @@ import { createClient } from '@supabase/supabase-js';
 // el resto del código no cambia.
 // ------------------------------------------------------------
 if (typeof window !== 'undefined' && !window.storage) {
-  // Cliente Supabase propio del storage (las mismas variables VITE_ de Vercel)
-  const _url = import.meta.env.VITE_SUPABASE_URL;
-  const _key = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  const _sb = (_url && _key) ? createClient(_url, _key) : null;
+  // Usa el MISMO cliente que el resto de la app (definido más abajo como `supabase`).
+  // Se lee de forma perezosa: estas funciones sólo corren después de que el
+  // módulo terminó de evaluarse, así que `supabase` ya existe.
+  const cliente = () => { try { return supabase; } catch { return null; } };
 
   const prefijoLocal = 'personal:';
 
   window.storage = {
     async get(clave, compartido = false) {
+      const _sb = cliente();
       if (compartido && _sb) {
         const { data, error } = await _sb
           .from('app_state').select('value').eq('key', clave).maybeSingle();
@@ -47,6 +48,7 @@ if (typeof window !== 'undefined' && !window.storage) {
       return { key: clave, value: bruto, shared: false };
     },
     async set(clave, valor, compartido = false) {
+      const _sb = cliente();
       if (compartido && _sb) {
         // valor llega como string JSON; lo parseamos para guardarlo como JSONB
         let parsed;
@@ -61,6 +63,7 @@ if (typeof window !== 'undefined' && !window.storage) {
       return { key: clave, value: valor, shared: false };
     },
     async delete(clave, compartido = false) {
+      const _sb = cliente();
       if (compartido && _sb) {
         const { error } = await _sb.from('app_state').delete().eq('key', clave);
         if (error) console.error('storage.delete', error);
@@ -70,6 +73,7 @@ if (typeof window !== 'undefined' && !window.storage) {
       return { key: clave, deleted: true, shared: false };
     },
     async list(inicio = '', compartido = false) {
+      const _sb = cliente();
       if (compartido && _sb) {
         const { data, error } = await _sb
           .from('app_state').select('key').like('key', inicio + '%');
@@ -1088,6 +1092,9 @@ export default function PedidosApp() {
   const [activeOrderId, setActiveOrderId] = useState(null);
 
   useEffect(() => {
+    // Los datos compartidos viven en Supabase y requieren sesión iniciada.
+    // Si aún no hay sesión, esperamos: este efecto se repite cuando llega.
+    if (SUPABASE_CONFIGURADO && !sesionAuth) return;
     (async () => {
       const [p, s, o, d, t, mc, emp, embs, mcp, tc, ci, fa, pr, us, fac, bo, sesion, modoGuardado, ultimoUsuario] = await Promise.all([
         loadShared(KEYS.products, seedProducts()),
@@ -1133,7 +1140,7 @@ export default function PedidosApp() {
       // Ya no se restaura por usuarioId guardado en el dispositivo.
       setLoading(false);
     })();
-  }, []);
+  }, [sesionAuth]);
 
   // ---------- Modo offline: cola de sincronización ----------
   const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -1350,16 +1357,6 @@ export default function PedidosApp() {
     });
   }, [guardarConCola]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-app-bg flex items-center justify-center">
-        <div className="text-app-gold text-sm tracking-widest uppercase animate-pulse">
-          Cargando inventario…
-        </div>
-      </div>
-    );
-  }
-
   // Gate de acceso
   // 1) Faltan las variables de entorno de Supabase
   if (!SUPABASE_CONFIGURADO) return <PantallaSinConfigurar />;
@@ -1376,6 +1373,17 @@ export default function PedidosApp() {
 
   // 3) Sin sesión: pedir correo y contraseña
   if (!sesionAuth) return <PantallaLogin />;
+
+  // 3b) Ya con sesión: traer los datos compartidos desde Supabase
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-app-bg flex items-center justify-center">
+        <div className="text-app-gold text-sm tracking-widest uppercase animate-pulse">
+          Cargando inventario…
+        </div>
+      </div>
+    );
+  }
 
   // 4) Con sesión pero el correo no corresponde a ningún comprador
   if (!usuarioActivo) {
