@@ -650,6 +650,98 @@ const supabase = SUPABASE_CONFIGURADO
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
 
+// ------------------------------------------------------------
+// FOTOS — Supabase Storage (bucket "productos")
+// De cada foto se guardan dos versiones:
+//   • original  -> tal cual se tomó, sin recomprimir
+//   • miniatura -> 400px de ancho, para listas y tarjetas
+// En el producto queda: { url, thumb, path, pathThumb }
+// ------------------------------------------------------------
+const BUCKET_FOTOS = 'productos';
+const ANCHO_MINIATURA = 400;
+
+// Genera una miniatura JPEG a partir del archivo original
+function crearMiniatura(file, ancho = ANCHO_MINIATURA) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const escala = Math.min(1, ancho / img.width);
+      const w = Math.round(img.width * escala);
+      const h = Math.round(img.height * escala);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('No se pudo crear la miniatura'))),
+        'image/jpeg',
+        0.8
+      );
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Imagen no válida')); };
+    img.src = url;
+  });
+}
+
+// Sube una foto (original + miniatura) y devuelve sus URLs
+async function subirFoto(file, codigoProducto = 'sin-codigo') {
+  if (!supabase) throw new Error('Supabase no está configurado');
+
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+  const sello = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const carpeta = `${codigoProducto}`.replace(/[^a-zA-Z0-9_-]/g, '_') || 'sin-codigo';
+  const pathOriginal = `${carpeta}/${sello}.${ext}`;
+  const pathThumb = `${carpeta}/${sello}_thumb.jpg`;
+
+  const { error: errOrig } = await supabase.storage
+    .from(BUCKET_FOTOS)
+    .upload(pathOriginal, file, { contentType: file.type, upsert: false });
+  if (errOrig) throw errOrig;
+
+  let urlThumb = null;
+  try {
+    const thumb = await crearMiniatura(file);
+    const { error: errThumb } = await supabase.storage
+      .from(BUCKET_FOTOS)
+      .upload(pathThumb, thumb, { contentType: 'image/jpeg', upsert: false });
+    if (!errThumb) {
+      urlThumb = supabase.storage.from(BUCKET_FOTOS).getPublicUrl(pathThumb).data.publicUrl;
+    }
+  } catch { /* si falla la miniatura, se usa la original */ }
+
+  const urlOriginal = supabase.storage.from(BUCKET_FOTOS).getPublicUrl(pathOriginal).data.publicUrl;
+
+  return {
+    url: urlOriginal,
+    thumb: urlThumb || urlOriginal,
+    path: pathOriginal,
+    pathThumb: urlThumb ? pathThumb : null,
+  };
+}
+
+// Borra una foto y su miniatura del almacenamiento
+async function borrarFoto(foto) {
+  if (!supabase || !foto?.path) return;
+  const rutas = [foto.path, foto.pathThumb].filter(Boolean);
+  try { await supabase.storage.from(BUCKET_FOTOS).remove(rutas); } catch { /* ignorar */ }
+}
+
+// Acepta tanto el formato viejo (string) como el nuevo ({url, thumb})
+function urlFoto(foto, preferirMiniatura = true) {
+  if (!foto) return null;
+  if (typeof foto === 'string') return foto;
+  return (preferirMiniatura ? foto.thumb : foto.url) || foto.url || null;
+}
+
+// Normaliza el campo de fotos de un producto a un arreglo
+function listaFotos(producto) {
+  if (!producto) return [];
+  if (Array.isArray(producto.fotos)) return producto.fotos;
+  if (producto.foto) return [producto.foto];
+  return [];
+}
+
 // Pantalla de aviso si faltan las variables de entorno
 function PantallaSinConfigurar() {
   return (
@@ -2798,7 +2890,7 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
             ciudad: product.ciudad || '', fabrica: product.fabrica || '',
             costoMonto: product.costoMonto, costoMoneda: product.costoMoneda,
             ventaLempiras: product.ventaLempiras ?? null,
-            foto: product.foto || null, variantes,
+            foto: product.foto || null, fotos: listaFotos(product), variantes,
           },
         ];
     });
@@ -2820,7 +2912,7 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
         tipo: product.tipo, subtipo: product.subtipo, departamento: product.departamento, marca: product.marca,
         ciudad: product.ciudad || '', fabrica: product.fabrica || '',
         costoMonto: product.costoMonto, costoMoneda: product.costoMoneda,
-        ventaLempiras: product.ventaLempiras ?? null, foto: product.foto || null,
+        ventaLempiras: product.ventaLempiras ?? null, foto: product.foto || null, fotos: listaFotos(product),
       };
       if (variantesH.length > 0) next.push({ ...base, destino: 'H', variantes: variantesH });
       if (variantesG.length > 0) next.push({ ...base, destino: 'G', variantes: variantesG });
@@ -2871,6 +2963,7 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
           costoMoneda: prod.costoMoneda,
           ventaLempiras: prod.ventaLempiras ?? null,
           foto: prod.foto || null,
+          fotos: listaFotos(prod),
           variantes: n.variantes,
         };
       });
@@ -3105,8 +3198,8 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
             return (
               <div key={p.id}>
                 <button onClick={() => openProduct(p)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left active:bg-app-active">
-                  {p.foto ? (
-                    <img src={p.foto} alt={p.descripcion} className="w-10 h-10 object-cover rounded-md shrink-0" />
+                  {listaFotos(p).length ? (
+                    <img src={urlFoto(listaFotos(p)[0])} alt={p.descripcion} className="w-10 h-10 object-cover rounded-md shrink-0" />
                   ) : (
                     <div className="w-10 h-10 rounded-md bg-app-bg border border-app-line flex items-center justify-center shrink-0">
                       <ImageOff size={13} className="text-app-dim3" />
@@ -3546,8 +3639,8 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
                 {itemsDestino.map((it) => (
                   <div key={it.productId} className="bg-app-panel border border-app-line rounded-xl p-3">
                     <div className="flex items-center gap-3">
-                      {it.foto ? (
-                        <img src={it.foto} alt={it.descripcion} className="w-11 h-11 object-cover rounded-lg shrink-0" />
+                      {listaFotos(it).length ? (
+                        <img src={urlFoto(listaFotos(it)[0])} alt={it.descripcion} className="w-11 h-11 object-cover rounded-lg shrink-0" />
                       ) : (
                         <div className="w-11 h-11 rounded-lg bg-app-bg border border-app-line flex items-center justify-center shrink-0">
                           <ImageOff size={14} className="text-app-dim3" />
@@ -3692,7 +3785,7 @@ const emptyForm = () => ({
   codigo: '', descripcion: '', departamento: '', tipo: '', subtipo: '', marca: '', genero: '', origen: '',
   ciudad: '', fabrica: '',
   colores: [], colorInput: '',
-  costoMonto: '', costoMoneda: 'USD', ventaLempiras: '', foto: null,
+  costoMonto: '', costoMoneda: 'USD', ventaLempiras: '', foto: null, fotos: [],
 });
 
 // Devuelve el prefijo de correlativo (Letra + Año + Mes), ej. "Y266"
@@ -3923,6 +4016,8 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
       : (initialCodigo || ''),
   });
   const [error, setError] = useState('');
+  const [subiendoFotos, setSubiendoFotos] = useState(false);
+  const [errorFoto, setErrorFoto] = useState('');
   const [codigoEditado, setCodigoEditado] = useState(false); // el usuario escribió el código a mano
   const [openFieldId, setOpenFieldId] = useState(null);
   const [descEditada, setDescEditada] = useState(false);
@@ -3976,13 +4071,33 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
     updateField({ departamento: v, genero: generoSugerido });
   };
 
-  const handlePhoto = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setForm((f) => ({ ...f, foto: reader.result }));
-    reader.readAsDataURL(file);
+  const handlePhoto = async (e) => {
+    const archivos = Array.from(e.target.files || []);
     e.target.value = '';
+    if (!archivos.length) return;
+    setSubiendoFotos(true);
+    setErrorFoto('');
+    try {
+      const subidas = [];
+      for (const file of archivos) {
+        try {
+          subidas.push(await subirFoto(file, form.codigo));
+        } catch (err) {
+          setErrorFoto(`No se pudo subir "${file.name}": ${err.message || err}`);
+        }
+      }
+      if (subidas.length) {
+        setForm((f) => ({ ...f, fotos: [...(f.fotos || []), ...subidas] }));
+      }
+    } finally {
+      setSubiendoFotos(false);
+    }
+  };
+
+  const quitarFoto = async (indice) => {
+    const foto = (form.fotos || [])[indice];
+    setForm((f) => ({ ...f, fotos: (f.fotos || []).filter((_, i) => i !== indice) }));
+    await borrarFoto(foto);
   };
 
   const addColor = () => {
@@ -4061,7 +4176,8 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
         costoMonto: parseFloat(form.costoMonto),
         costoMoneda: form.costoMoneda,
         ventaLempiras: parseFloat(form.ventaLempiras),
-        foto: form.foto,
+        foto: form.fotos?.[0] ? urlFoto(form.fotos[0], false) : null,
+        fotos: form.fotos || [],
         destinoPedido: pedidoMode ? destinoPedido : undefined,
       };
     };
@@ -4184,18 +4300,54 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
         )}
       </div>
 
-      {form.foto ? (
-        <div className="relative w-full">
-          <img src={form.foto} alt="Producto" className="w-full h-40 object-cover rounded-lg border border-app-line" />
-          <button onClick={() => setForm((f) => ({ ...f, foto: null }))} className="absolute top-2 right-2 bg-app-bg-80 rounded-full p-1.5"><X size={14} /></button>
-        </div>
-      ) : (
-        <div className="w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center justify-center gap-1 text-app-dim py-4 px-3 text-center">
+      <div className="space-y-2">
+        {(form.fotos || []).length > 0 && (
+          <div className="grid grid-cols-3 gap-2">
+            {(form.fotos || []).map((foto, i) => (
+              <div key={foto.path || i} className="relative aspect-square">
+                <img
+                  src={urlFoto(foto)}
+                  alt={`Foto ${i + 1}`}
+                  className="w-full h-full object-cover rounded-lg border border-app-line"
+                />
+                <button
+                  onClick={() => quitarFoto(i)}
+                  className="absolute top-1 right-1 bg-app-bg-80 rounded-full p-1"
+                  aria-label="Quitar foto"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <label
+          className={`w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center
+                      justify-center gap-1 py-4 px-3 text-center cursor-pointer
+                      ${subiendoFotos ? 'opacity-60 pointer-events-none' : 'hover:border-app-gold'}`}
+        >
           <Camera size={20} className="text-app-dim3" />
-          <span className="text-xs">Fotos no disponibles por ahora</span>
-          <span className="text-xs text-app-dim3">Se habilitarán en alta resolución tras la migración</span>
-        </div>
-      )}
+          <span className="text-xs text-app-dim2">
+            {subiendoFotos
+              ? 'Subiendo…'
+              : (form.fotos || []).length
+                ? 'Agregar más fotos'
+                : 'Tomar foto o elegir del dispositivo'}
+          </span>
+          <span className="text-xs text-app-dim3">Se guardan en resolución original</span>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handlePhoto}
+            disabled={subiendoFotos}
+          />
+        </label>
+
+        {errorFoto && <p className="text-xs text-app-red">{errorFoto}</p>}
+      </div>
 
       <div>
         <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 flex items-center justify-between">
@@ -4653,11 +4805,14 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
     costoMoneda: product.costoMoneda || 'USD',
     ventaLempiras: String(product.ventaLempiras || ''),
     foto: product.foto || null,
+    fotos: listaFotos(product),
   });
   const [matrix, setMatrix] = useState(
     esCLInit ? variantesToMatrixCL(product.variantes) : variantesToMatrix(product.variantes)
   );
   const [error, setError] = useState('');
+  const [subiendoFotos, setSubiendoFotos] = useState(false);
+  const [errorFoto, setErrorFoto] = useState('');
   const [openFieldId, setOpenFieldId] = useState(null);
   const [descEditada, setDescEditada] = useState(true); // en edición siempre manual por defecto
 
@@ -4675,13 +4830,33 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
     });
   };
 
-  const handlePhoto = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setForm((f) => ({ ...f, foto: reader.result }));
-    reader.readAsDataURL(file);
+  const handlePhoto = async (e) => {
+    const archivos = Array.from(e.target.files || []);
     e.target.value = '';
+    if (!archivos.length) return;
+    setSubiendoFotos(true);
+    setErrorFoto('');
+    try {
+      const subidas = [];
+      for (const file of archivos) {
+        try {
+          subidas.push(await subirFoto(file, form.codigo));
+        } catch (err) {
+          setErrorFoto(`No se pudo subir "${file.name}": ${err.message || err}`);
+        }
+      }
+      if (subidas.length) {
+        setForm((f) => ({ ...f, fotos: [...(f.fotos || []), ...subidas] }));
+      }
+    } finally {
+      setSubiendoFotos(false);
+    }
+  };
+
+  const quitarFoto = async (indice) => {
+    const foto = (form.fotos || [])[indice];
+    setForm((f) => ({ ...f, fotos: (f.fotos || []).filter((_, i) => i !== indice) }));
+    await borrarFoto(foto);
   };
 
   const handleSave = () => {
@@ -4718,7 +4893,8 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
       costoMonto: parseFloat(form.costoMonto),
       costoMoneda: form.costoMoneda,
       ventaLempiras: parseFloat(form.ventaLempiras),
-      foto: form.foto,
+      foto: form.fotos?.[0] ? urlFoto(form.fotos[0], false) : null,
+      fotos: form.fotos || [],
     });
   };
 
@@ -4777,18 +4953,51 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
         )}
       </div>
 
-      {form.foto ? (
-        <div className="relative w-full">
-          <img src={form.foto} alt="Producto" className="w-full h-36 object-cover rounded-lg border border-app-line" />
-          <button onClick={() => setForm((f) => ({ ...f, foto: null }))} className="absolute top-2 right-2 bg-app-bg-80 rounded-full p-1.5"><X size={14} /></button>
-        </div>
-      ) : (
-        <div className="w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center justify-center gap-1 text-app-dim py-4 px-3 text-center">
+      <div className="space-y-2">
+        {(form.fotos || []).length > 0 && (
+          <div className="grid grid-cols-3 gap-2">
+            {(form.fotos || []).map((foto, i) => (
+              <div key={foto.path || i} className="relative aspect-square">
+                <img
+                  src={urlFoto(foto)}
+                  alt={`Foto ${i + 1}`}
+                  className="w-full h-full object-cover rounded-lg border border-app-line"
+                />
+                <button
+                  onClick={() => quitarFoto(i)}
+                  className="absolute top-1 right-1 bg-app-bg-80 rounded-full p-1"
+                  aria-label="Quitar foto"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <label
+          className={`w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center
+                      justify-center gap-1 py-4 px-3 text-center cursor-pointer
+                      ${subiendoFotos ? 'opacity-60 pointer-events-none' : 'hover:border-app-gold'}`}
+        >
           <Camera size={18} className="text-app-dim3" />
-          <span className="text-xs">Fotos no disponibles por ahora</span>
-          <span className="text-xs text-app-dim3">Se habilitarán tras la migración</span>
-        </div>
-      )}
+          <span className="text-xs text-app-dim2">
+            {subiendoFotos
+              ? 'Subiendo…'
+              : (form.fotos || []).length ? 'Agregar más fotos' : 'Tomar foto o elegir del dispositivo'}
+          </span>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handlePhoto}
+            disabled={subiendoFotos}
+          />
+        </label>
+
+        {errorFoto && <p className="text-xs text-app-red">{errorFoto}</p>}
+      </div>
 
       <input
         placeholder="Código"
@@ -5122,8 +5331,8 @@ function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marca
                         onClick={() => setExpandedProductId(expandedProductId === p.id ? null : p.id)}
                         className="w-full flex items-center gap-3 px-3 py-3 text-left"
                       >
-                        {p.foto ? (
-                          <img src={p.foto} alt={p.descripcion} className="w-11 h-11 object-cover rounded-lg shrink-0" />
+                        {listaFotos(p).length ? (
+                          <img src={urlFoto(listaFotos(p)[0])} alt={p.descripcion} className="w-11 h-11 object-cover rounded-lg shrink-0" />
                         ) : (
                           <div className="w-11 h-11 rounded-lg bg-app-bg border border-app-line flex items-center justify-center shrink-0">
                             <ImageOff size={15} className="text-app-dim3" />
