@@ -168,7 +168,13 @@ const MODO_KEY = 'pedidos:modo';     // storage PERSONAL: 'auto' | 'movil' — p
 async function loadShared(key, fallback) {
   try {
     const res = await window.storage.get(key, true);
-    return res ? JSON.parse(res.value) : fallback;
+    if (!res) return fallback;
+    const valor = JSON.parse(res.value);
+    // Si lo guardado es null/undefined, o cambió de forma respecto al
+    // respaldo (p. ej. se esperaba una lista y hay un objeto), usar el respaldo.
+    if (valor === null || valor === undefined) return fallback;
+    if (Array.isArray(fallback) && !Array.isArray(valor)) return fallback;
+    return valor;
   } catch {
     return fallback;
   }
@@ -1498,17 +1504,17 @@ export default function PedidosApp() {
   // Proveedores del origen activo. El filtro es ESTRICTO: cada proveedor pertenece a un
   // solo país de compra. Los que quedaron sin país (creados antes de esta regla) se
   // muestran aparte en la pantalla de Proveedores para asignarles el suyo.
-  const suppliersOrigen = suppliers.filter((s) => s.origen === origenActivo.id);
-  const suppliersSinOrigen = suppliers.filter((s) => !s.origen);
-  const productsOrigen = products.filter((p) => !p.origen || p.origen === origenActivo.id);
-  const ordersOrigen = orders.filter((o) => !o.origen || o.origen === origenActivo.id);
+  const suppliersOrigen = (suppliers || []).filter((s) => s.origen === origenActivo.id);
+  const suppliersSinOrigen = (suppliers || []).filter((s) => !s.origen);
+  const productsOrigen = (products || []).filter((p) => !p.origen || p.origen === origenActivo.id);
+  const ordersOrigen = (orders || []).filter((o) => !o.origen || o.origen === origenActivo.id);
 
   const activeOrder = ordersOrigen.find((o) => o.id === activeOrderId)
     || orders.find((o) => o.id === activeOrderId); // fallback para pedidos sin origen
 
   // ¿El usuario activo es administrador? (mismo criterio que en Administración)
   // Regla: u.esAdmin === true. Respaldo: si nadie es admin explícito, Yamil Handal lo es.
-  const hayAdminExplicito = usuarios.some((x) => x.esAdmin);
+  const hayAdminExplicito = (usuarios || []).some((x) => x.esAdmin);
   const soyAdmin = !!usuarioActivo && (
     usuarioActivo.esAdmin ||
     (!hayAdminExplicito && (usuarioActivo.nombre || '').trim().toLowerCase() === 'yamil handal')
@@ -6341,7 +6347,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
     if (!u) return false;
     if (u.esAdmin) return true;
     // Respaldo: si nadie tiene esAdmin, Yamil Handal es admin
-    const hayAdminExplicito = usuarios.some((x) => x.esAdmin);
+    const hayAdminExplicito = (usuarios || []).some((x) => x.esAdmin);
     if (!hayAdminExplicito && u.nombre && u.nombre.trim().toLowerCase() === 'yamil handal') return true;
     return false;
   };
