@@ -3506,6 +3506,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
 
   const exportExcel = () => {
     const rows = [];
+    const enlacesFoto = [];   // URL de la foto de cada fila, para el hipervínculo
     const itemsOrdenados = [...order.items].sort((a, b) => (a.destino || 'H').localeCompare(b.destino || 'H'));
     // Nombre del destino: prioriza el destino del item; si no, usa el destinoPedido del pedido
     const nombreDestino = (it) => {
@@ -3516,6 +3517,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
     };
     const nombreOrigen = (oid) => (ORIGENES.find((o) => o.id === oid)?.label || oid || '');
     itemsOrdenados.forEach((it) => {
+      const enlaceFoto = urlFoto(listaFotos(it)[0], false) || '';
       it.variantes.forEach((v) => {
         rows.push({
           Código: codigoConDestino(it), Destino: nombreDestino(it), Origen: nombreOrigen(it.origen || order.origen),
@@ -3525,7 +3527,9 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
           'Costo unitario': it.costoMonto, Moneda: it.costoMoneda, Subtotal: v.cantidad * it.costoMonto,
           'Venta HNL': it.ventaLempiras ?? '',
           Ciudad: it.ciudad || '', Fábrica: it.fabrica || '',
+          Foto: enlaceFoto ? 'Ver foto' : '',
         });
+        enlacesFoto.push(enlaceFoto);   // misma posición que la fila
       });
     });
     rows.push({});
@@ -3551,10 +3555,30 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
     ]);
     XLSX.utils.sheet_add_json(ws, rows, { origin: -1 });
 
+    // Convertir la columna "Foto" en enlaces clicables
+    const rango = XLSX.utils.decode_range(ws['!ref']);
+    let colFoto = -1, filaEncabezado = -1;
+    for (let R = rango.s.r; R <= rango.e.r && colFoto === -1; R++) {
+      for (let C = rango.s.c; C <= rango.e.c; C++) {
+        const celda = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (celda && celda.v === 'Foto') { colFoto = C; filaEncabezado = R; break; }
+      }
+    }
+    if (colFoto !== -1) {
+      enlacesFoto.forEach((url, i) => {
+        if (!url) return;
+        const ref = XLSX.utils.encode_cell({ r: filaEncabezado + 1 + i, c: colFoto });
+        const celda = ws[ref];
+        if (!celda) return;
+        celda.l = { Target: url, Tooltip: 'Abrir foto del producto' };
+        celda.s = { font: { color: { rgb: '0563C1' }, underline: true } };
+      });
+    }
+
     ws['!cols'] = [
       { wch: 16 }, { wch: 11 }, { wch: 10 }, { wch: 28 }, { wch: 14 }, { wch: 20 }, { wch: 14 }, { wch: 14 },
       { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 14 }, { wch: 9 }, { wch: 13 }, { wch: 8 }, { wch: 12 },
-      { wch: 11 }, { wch: 16 }, { wch: 18 },
+      { wch: 11 }, { wch: 16 }, { wch: 18 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
@@ -3576,8 +3600,13 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       // Detalle breve de colores/tallas debajo de la descripción (sin ocupar mucho)
       const colores = [...new Set((it.variantes || []).map((v) => v.color))];
       const detalle = colores.length > 0 ? `<div class="lin-det">${esc(colores.join(', '))}</div>` : '';
+      const foto = urlFoto(listaFotos(it)[0], false);
+      const celdaFoto = foto
+        ? `<td class="foto"><img src="${esc(foto)}" alt=""></td>`
+        : `<td class="foto"><div class="sin-foto"></div></td>`;
       return `
         <tr>
+          ${celdaFoto}
           <td class="cod">${esc(codigoConDestino(it))}</td>
           <td class="desc">${esc(it.descripcion || '')}${detalle}</td>
           <td class="num">${pzs}</td>
@@ -3594,6 +3623,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       <table class="lineas">
         <thead>
           <tr>
+            <th class="foto">Foto</th>
             <th class="cod">Estilo</th>
             <th class="desc">Descripción</th>
             <th class="num">Cant.</th>
@@ -3633,6 +3663,9 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
           <title>${esc(order.numero || 'Pedido')} - ${esc(supplier ? supplier.nombre : '')}</title>
           <style>
             @page { size: A4 portrait; margin: 14mm; }
+            /* Conservar colores e imágenes al imprimir o guardar como PDF */
+            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            table.lineas tr { break-inside: avoid; page-break-inside: avoid; }
             * { box-sizing: border-box; }
             body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; color: #1a1a1a; font-size: 11px; margin: 0; }
             .cab { border-bottom: 2px solid #1a1a1a; padding-bottom: 10px; margin-bottom: 14px; }
@@ -3655,6 +3688,15 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
             table.lineas .desc { color: #333; }
             table.lineas .num { text-align: right; white-space: nowrap; }
             table.lineas th.num { text-align: right; }
+            table.lineas .foto { width: 54px; padding: 4px 6px; }
+            table.lineas .foto img {
+              width: 46px; height: 46px; object-fit: cover;
+              border-radius: 4px; border: 1px solid #ddd; display: block;
+            }
+            table.lineas .sin-foto {
+              width: 46px; height: 46px; border-radius: 4px;
+              border: 1px dashed #ddd; background: #f5f5f5;
+            }
             .lin-det { color: #888; font-size: 9px; margin-top: 2px; }
             .resumen { margin-top: 16px; border-top: 2px solid #1a1a1a; padding-top: 9px; display: flex; justify-content: space-between; align-items: flex-start; }
             .resumen .izq { font-size: 11px; color: #555; line-height: 1.7; }
