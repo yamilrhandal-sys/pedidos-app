@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Plus, Trash2, FileDown, Package, Truck, ClipboardList, X, ChevronRight,
-  ChevronDown, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, ScanLine, BarChart3, Copy,
+  ChevronDown, ChevronLeft, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, ScanLine, BarChart3, Copy,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { createClient } from '@supabase/supabase-js';
@@ -1150,6 +1150,124 @@ const sumVariantes = (variantes) => (variantes || []).reduce((s, v) => s + (v.ca
 const varLabel = (v) => (v.cintura ? `Cintura ${v.cintura} / Largo ${v.largo}` : v.talla);
 
 // ---------- Main App ----------
+// ------------------------------------------------------------
+// Visor de fotos a pantalla completa.
+// Muestra la imagen en resolución original y permite pasar
+// entre las fotos del producto con flechas o deslizando.
+// ------------------------------------------------------------
+function VisorFotos({ fotos = [], indiceInicial = 0, titulo = '', onCerrar }) {
+  const [i, setI] = useState(indiceInicial);
+  const total = fotos.length;
+  const tactoX = useRef(null);
+
+  const anterior = useCallback(() => setI((n) => (n - 1 + total) % total), [total]);
+  const siguiente = useCallback(() => setI((n) => (n + 1) % total), [total]);
+
+  // Teclado: flechas para navegar, Esc para salir
+  useEffect(() => {
+    const alPulsar = (e) => {
+      if (e.key === 'Escape') onCerrar();
+      else if (e.key === 'ArrowLeft' && total > 1) anterior();
+      else if (e.key === 'ArrowRight' && total > 1) siguiente();
+    };
+    window.addEventListener('keydown', alPulsar);
+    return () => window.removeEventListener('keydown', alPulsar);
+  }, [anterior, siguiente, onCerrar, total]);
+
+  // Bloquear el desplazamiento del fondo mientras el visor está abierto
+  useEffect(() => {
+    const previo = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previo; };
+  }, []);
+
+  if (!total) return null;
+
+  const alTocarInicio = (e) => { tactoX.current = e.touches[0].clientX; };
+  const alTocarFin = (e) => {
+    if (tactoX.current === null || total < 2) return;
+    const dif = e.changedTouches[0].clientX - tactoX.current;
+    if (Math.abs(dif) > 50) (dif > 0 ? anterior() : siguiente());
+    tactoX.current = null;
+  };
+
+  const actual = fotos[i];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black flex flex-col"
+      onTouchStart={alTocarInicio}
+      onTouchEnd={alTocarFin}
+    >
+      {/* Barra superior */}
+      <div className="flex items-center justify-between px-4 py-3 text-white shrink-0">
+        <span className="text-sm truncate pr-3">{titulo}</span>
+        <div className="flex items-center gap-3 shrink-0">
+          {total > 1 && <span className="text-xs opacity-70">{i + 1} / {total}</span>}
+          <button onClick={onCerrar} aria-label="Cerrar"><X size={22} /></button>
+        </div>
+      </div>
+
+      {/* Imagen */}
+      <div className="flex-1 flex items-center justify-center relative min-h-0 px-2">
+        <img
+          src={urlFoto(actual, false)}
+          alt={titulo}
+          className="max-w-full max-h-full object-contain"
+        />
+
+        {total > 1 && (
+          <>
+            <button
+              onClick={anterior}
+              className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-2"
+              aria-label="Anterior"
+            >
+              <ChevronLeft size={24} />
+            </button>
+            <button
+              onClick={siguiente}
+              className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 text-white rounded-full p-2"
+              aria-label="Siguiente"
+            >
+              <ChevronRight size={24} />
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* Miniaturas */}
+      {total > 1 && (
+        <div className="flex gap-2 overflow-x-auto px-4 py-3 shrink-0">
+          {fotos.map((f, n) => (
+            <button
+              key={f.path || n}
+              onClick={() => setI(n)}
+              className={`w-14 h-14 rounded-md overflow-hidden shrink-0 border-2 ${
+                n === i ? 'border-white' : 'border-transparent opacity-50'
+              }`}
+            >
+              <img src={urlFoto(f)} alt="" className="w-full h-full object-cover" />
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Descargar la original */}
+      <div className="px-4 pb-4 shrink-0">
+        <a
+          href={urlFoto(actual, false)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block text-center text-xs text-white/60 hover:text-white py-1"
+        >
+          Abrir original en pestaña nueva
+        </a>
+      </div>
+    </div>
+  );
+}
+
 export default function PedidosApp() {
   const [view, setView] = useState('pedidos');
   const [loading, setLoading] = useState(true);
@@ -2797,6 +2915,7 @@ function TotalesConversion({ totals, tasaCambio, setTasaCambio, label = 'Total e
 }
 
 function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, marcas, marcasProveedores = {}, ciudades, fabricas, factores, suppliers, embarcadores = [], tasaCambio, setTasaCambio, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+  const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [supplierId, setSupplierId] = useState(borrador?.supplierId || suppliers[0]?.id || '');
   const [items, setItems] = useState(borrador?.items || []);
   const [query, setQuery] = useState('');
@@ -3205,7 +3324,12 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
               <div key={p.id}>
                 <button onClick={() => openProduct(p)} className="w-full flex items-center gap-3 px-3 py-2.5 text-left active:bg-app-active">
                   {listaFotos(p).length ? (
-                    <img src={urlFoto(listaFotos(p)[0])} alt={p.descripcion} className="w-10 h-10 object-cover rounded-md shrink-0" />
+                    <img
+                      src={urlFoto(listaFotos(p)[0])}
+                      alt={p.descripcion}
+                      className="w-10 h-10 object-cover rounded-md shrink-0 cursor-zoom-in"
+                      onClick={(e) => { e.stopPropagation(); setVisor({ fotos: listaFotos(p), titulo: p.descripcion || p.codigo }); }}
+                    />
                   ) : (
                     <div className="w-10 h-10 rounded-md bg-app-bg border border-app-line flex items-center justify-center shrink-0">
                       <ImageOff size={13} className="text-app-dim3" />
@@ -3337,12 +3461,21 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
           Crear pedido
         </button>
       </div>
+
+      {visor && (
+        <VisorFotos
+          fotos={visor.fotos}
+          titulo={visor.titulo}
+          onCerrar={() => setVisor(null)}
+        />
+      )}
     </div>
   );
 }
 
 // ---------- Detalle pedido ----------
 function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, setTasaCambio, onDuplicar, hayBorradorPendiente, empresa, embarcadores = [] }) {
+  const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [confirmDuplicar, setConfirmDuplicar] = useState(false);
   const [pdfHtml, setPdfHtml] = useState(null);   // documento a mostrar
   const [pdfModo, setPdfModo] = useState('proveedor');
@@ -3646,7 +3779,12 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
                   <div key={it.productId} className="bg-app-panel border border-app-line rounded-xl p-3">
                     <div className="flex items-center gap-3">
                       {listaFotos(it).length ? (
-                        <img src={urlFoto(listaFotos(it)[0])} alt={it.descripcion} className="w-11 h-11 object-cover rounded-lg shrink-0" />
+                        <img
+                          src={urlFoto(listaFotos(it)[0])}
+                          alt={it.descripcion}
+                          className="w-11 h-11 object-cover rounded-lg shrink-0 cursor-zoom-in"
+                          onClick={(e) => { e.stopPropagation(); setVisor({ fotos: listaFotos(it), titulo: it.descripcion || it.codigo }); }}
+                        />
                       ) : (
                         <div className="w-11 h-11 rounded-lg bg-app-bg border border-app-line flex items-center justify-center shrink-0">
                           <ImageOff size={14} className="text-app-dim3" />
@@ -3781,6 +3919,14 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
             </div>
           )}
         </div>
+      )}
+
+      {visor && (
+        <VisorFotos
+          fotos={visor.fotos}
+          titulo={visor.titulo}
+          onCerrar={() => setVisor(null)}
+        />
       )}
     </div>
   );
@@ -5136,6 +5282,7 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
 }
 
 function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marcas, ciudades, fabricas, factores, tasaCambio, origen, orders, suppliers, usuarioActivoNombre, usuarioActivoPrefijo, onOpenConfig, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+  const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState('');
   const [expandedProductId, setExpandedProductId] = useState(null);
@@ -5338,7 +5485,12 @@ function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marca
                         className="w-full flex items-center gap-3 px-3 py-3 text-left"
                       >
                         {listaFotos(p).length ? (
-                          <img src={urlFoto(listaFotos(p)[0])} alt={p.descripcion} className="w-11 h-11 object-cover rounded-lg shrink-0" />
+                          <img
+                            src={urlFoto(listaFotos(p)[0])}
+                            alt={p.descripcion}
+                            className="w-11 h-11 object-cover rounded-lg shrink-0 cursor-zoom-in"
+                            onClick={(e) => { e.stopPropagation(); setVisor({ fotos: listaFotos(p), titulo: p.descripcion || p.codigo }); }}
+                          />
                         ) : (
                           <div className="w-11 h-11 rounded-lg bg-app-bg border border-app-line flex items-center justify-center shrink-0">
                             <ImageOff size={15} className="text-app-dim3" />
@@ -5416,6 +5568,14 @@ function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marca
           );
         })}
       </div>
+
+      {visor && (
+        <VisorFotos
+          fotos={visor.fotos}
+          titulo={visor.titulo}
+          onCerrar={() => setVisor(null)}
+        />
+      )}
     </div>
   );
 }
