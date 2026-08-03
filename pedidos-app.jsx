@@ -1196,6 +1196,10 @@ function VisorFotos({ fotos = [], indiceInicial = 0, titulo = '', onCerrar }) {
   return (
     <div
       className="fixed inset-0 z-50 bg-black flex flex-col"
+      style={{
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
       onTouchStart={alTocarInicio}
       onTouchEnd={alTocarFin}
     >
@@ -1204,12 +1208,21 @@ function VisorFotos({ fotos = [], indiceInicial = 0, titulo = '', onCerrar }) {
         <span className="text-sm truncate pr-3">{titulo}</span>
         <div className="flex items-center gap-3 shrink-0">
           {total > 1 && <span className="text-xs opacity-70">{i + 1} / {total}</span>}
-          <button onClick={onCerrar} aria-label="Cerrar"><X size={22} /></button>
+          <button
+            onClick={onCerrar}
+            className="bg-white/10 rounded-full p-2 -mr-1"
+            aria-label="Cerrar"
+          >
+            <X size={22} />
+          </button>
         </div>
       </div>
 
       {/* Imagen */}
-      <div className="flex-1 flex items-center justify-center relative min-h-0 px-2">
+      <div
+        className="flex-1 flex items-center justify-center relative min-h-0 px-2"
+        onClick={(e) => { if (e.target === e.currentTarget) onCerrar(); }}
+      >
         <img
           src={urlFoto(actual, false)}
           alt={titulo}
@@ -1639,7 +1652,10 @@ export default function PedidosApp() {
   );
 
   return (
-    <div className={`min-h-screen bg-app-bg text-app-white font-sans ${esEscritorio ? '' : 'pb-24'}`}>
+    <div
+      className={`min-h-screen bg-app-bg text-app-white font-sans ${esEscritorio ? '' : 'pb-24'}`}
+      style={esEscritorio ? undefined : { paddingBottom: 'calc(6rem + env(safe-area-inset-bottom))' }}
+    >
       <style>{APP_STYLES + `
         .placeholder-app-dim::placeholder { color: #6b6f7a; }
       `}</style>
@@ -1982,7 +1998,10 @@ function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleMod
   // Si el usuario está en modo móvil forzado en pantalla ancha, se lo mostramos para que pueda volver a auto.
   const mostrarBotonModo = typeof window !== 'undefined' && window.innerWidth >= 1024;
   return (
-    <header className="sticky top-0 z-20 bg-app-bg-95 backdrop-blur border-b border-app-line shadow-app">
+    <header
+      className="sticky top-0 z-20 bg-app-bg-95 backdrop-blur border-b border-app-line shadow-app"
+      style={{ paddingTop: 'env(safe-area-inset-top)' }}
+    >
       <div className={esEscritorio
         ? "max-w-6xl mx-auto px-6 py-3 flex items-center justify-between"
         : "max-w-md mx-auto px-4 py-3 flex items-center justify-between"
@@ -2344,7 +2363,10 @@ function BottomNav({ view, setView, soyAdmin }) {
     ...(soyAdmin ? [{ key: 'administracion', label: 'Admin', icon: Settings }] : []),
   ];
   return (
-    <nav className="fixed bottom-0 inset-x-0 bg-app-panel border-t border-app-line z-10 shadow-app-lg">
+    <nav
+      className="fixed bottom-0 inset-x-0 bg-app-panel border-t border-app-line z-10 shadow-app-lg"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
       <div className="max-w-md mx-auto flex">
         {items.map(({ key, label, icon: Icon }) => {
           const active = view === key
