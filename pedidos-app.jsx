@@ -1269,7 +1269,56 @@ function VisorFotos({ fotos = [], indiceInicial = 0, titulo = '', onCerrar }) {
   );
 }
 
-export default function PedidosApp() {
+// ------------------------------------------------------------
+// Red de seguridad: si algo falla al dibujar la pantalla, en vez de
+// quedar en negro se muestra el error y un botón para recuperarse.
+// ------------------------------------------------------------
+class LimiteDeError extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('Fallo en la interfaz:', error, info);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="min-h-screen bg-app-bg text-app-white font-sans flex items-center justify-center px-6">
+        <style>{APP_STYLES}</style>
+        <div className="w-full max-w-md bg-app-panel border border-app-line rounded-app-lg p-6 space-y-4">
+          <p className="text-3xl text-center">⚠️</p>
+          <h1 className="text-lg font-bold text-center">Algo salió mal</h1>
+          <p className="text-sm text-app-dim2 text-center">
+            La pantalla no se pudo mostrar. Tus datos guardados están a salvo.
+          </p>
+          <pre className="text-xs text-app-dim3 bg-app-bg border border-app-line rounded-app p-3 overflow-auto max-h-40 whitespace-pre-wrap">
+            {String(this.state.error?.message || this.state.error)}
+          </pre>
+          <div className="flex gap-2">
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="flex-1 py-2.5 rounded-app border border-app-line text-sm"
+            >
+              Intentar de nuevo
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="flex-1 py-2.5 rounded-app bg-app-gold text-app-bg text-sm font-semibold"
+            >
+              Recargar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+function PedidosAppInterno() {
   const [view, setView] = useState('pedidos');
   const [loading, setLoading] = useState(true);
   const [origenActivo, setOrigenActivo] = useState(null); // null = pantalla de selección
@@ -1970,6 +2019,15 @@ export default function PedidosApp() {
   );
 }
 
+// Punto de entrada: la app envuelta en la red de seguridad
+export default function PedidosApp() {
+  return (
+    <LimiteDeError>
+      <PedidosAppInterno />
+    </LimiteDeError>
+  );
+}
+
 // ---------- Seed data ----------
 function seedDepartamentos() {
   return ['Caballeros', 'Niños'];
@@ -2219,7 +2277,7 @@ function Reportes({ orders, suppliers, tasaCambio, factores }) {
     const comprador = o.creadoPor || 'Sin comprador';
     const supplier = suppliers.find((s) => s.id === o.supplierId);
     const nombreProveedor = supplier?.nombre || 'Proveedor eliminado';
-    o.items.forEach((it) => {
+    (o.items || []).forEach((it) => {
       const marca = it.marca || 'Sin marca';
       const depto = it.departamento || 'Sin departamento';
       const tipo = it.tipo || 'Sin tipo';
@@ -2710,7 +2768,7 @@ function PedidosList({ orders, suppliers, borrador, borradorAjenoBloquea = false
         const tarjetaPedido = (o) => {
           const supplier = suppliers.find((s) => s.id === o.supplierId);
           const totals = orderTotalsByCurrency(o.items);
-          const piezas = o.items.reduce((s, it) => s + sumVariantes(it.variantes), 0);
+          const piezas = (o.items || []).reduce((s, it) => s + sumVariantes(it.variantes), 0);
           return (
             <button
               key={o.id}
@@ -2730,7 +2788,7 @@ function PedidosList({ orders, suppliers, borrador, borradorAjenoBloquea = false
                 {o.numero && <p className="text-xs font-mono text-app-gold">{o.numero}</p>}
                 {o.creadoPor && <p className="text-xs text-app-dim">por {o.creadoPor}</p>}
                 <p className="text-xs text-app-dim2">
-                  {o.items.length} producto{o.items.length !== 1 ? 's' : ''} · {piezas} pzs ·{' '}
+                  {(o.items || []).length} producto{(o.items || []).length !== 1 ? 's' : ''} · {piezas} pzs ·{' '}
                   {Object.entries(totals).map(([m, v], i) => (
                     <span key={m}>{i > 0 ? ' + ' : ''}{fmtMoneda(v, m)}</span>
                   ))}
@@ -3194,17 +3252,17 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
     // Actualizar catálogo: si un producto con ese código YA existe (segundo pase para el otro
     // país), reusar el existente en vez de duplicarlo.
     setProducts((prev) => {
-      const map = new Map(prev.map((p) => [p.codigo.trim().toLowerCase(), p]));
+      const map = new Map(prev.map((p) => [(p.codigo || '').trim().toLowerCase(), p]));
       const merged = [...prev];
       nuevos.forEach((n) => {
-        if (!map.has(n.codigo.trim().toLowerCase())) merged.push(n);
+        if (!map.has((n.codigo || '').trim().toLowerCase())) merged.push(n);
       });
       return merged;
     });
 
     // Resolver los IDs finales: si el código ya existía, usamos el ID del producto existente
     const resolverProducto = (n) => {
-      const existente = products.find((p) => p.codigo.trim().toLowerCase() === n.codigo.trim().toLowerCase());
+      const existente = products.find((p) => (p.codigo || '').trim().toLowerCase() === (n.codigo || '').trim().toLowerCase());
       return existente || n;
     };
 
@@ -3554,7 +3612,7 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
                   <BotonBorrar onConfirm={() => removeItem(it.productId, it.destino)} size={16} />
                 </div>
                 <p className="text-xs text-app-dim mt-1.5">
-                  {it.variantes.map((v) => `${varLabel(v)} / ${v.color}: ${v.cantidad}`).join(' · ')}
+                  {(it.variantes || []).map((v) => `${varLabel(v)} / ${v.color}: ${v.cantidad}`).join(' · ')}
                 </p>
               </div>
             ))}
@@ -3625,7 +3683,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
     const nombreOrigen = (oid) => (ORIGENES.find((o) => o.id === oid)?.label || oid || '');
     itemsOrdenados.forEach((it) => {
       const enlaceFoto = urlFoto(listaFotos(it)[0], false) || '';
-      it.variantes.forEach((v) => {
+      (it.variantes || []).forEach((v) => {
         rows.push({
           Código: codigoConDestino(it), Destino: nombreDestino(it), Origen: nombreOrigen(it.origen || order.origen),
           Descripción: it.descripcion, Marca: it.marca || '', Departamento: it.departamento, Tipo: it.tipo, Subtipo: it.subtipo || '',
@@ -3644,7 +3702,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
 
     // Cabecera con los datos generales del pedido
     const etiquetaEstado = ESTADOS_PEDIDO[order.status]?.label || order.status || '';
-    const piezasTotales = order.items.reduce((s, it) => s + sumVariantes(it.variantes), 0);
+    const piezasTotales = (order.items || []).reduce((s, it) => s + sumVariantes(it.variantes), 0);
     const ws = XLSX.utils.aoa_to_sheet([
       ['PEDIDO', order.numero || ''],
       ['Proveedor', supplier ? supplier.nombre : 'Proveedor eliminado'],
@@ -3689,7 +3747,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
-    descargarLibro(wb, `${order.numero || 'pedido'}_${supplier ? supplier.nombre.replace(/\s+/g, '_') : order.id}_${order.fecha}.xlsx`);
+    descargarLibro(wb, `${order.numero || 'pedido'}_${supplier ? (supplier.nombre || '').replace(/\s+/g, '_') : order.id}_${order.fecha}.xlsx`);
   };
 
   // ---------- PDF del pedido: agrupado por artículo con matriz de tallas × colores ----------
@@ -3723,7 +3781,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
     };
 
     // Agrupar por destino cuando el pedido mezcla países
-    const destinos = [...new Set(order.items.map((it) => it.destino || order.destinoPedido || 'H'))];
+    const destinos = [...new Set((order.items || []).map((it) => it.destino || order.destinoPedido || 'H'))];
     const mezcla = destinos.length > 1;
 
     const tablaDe = (items) => `
@@ -3744,7 +3802,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
     let cuerpo = '';
     if (mezcla) {
       destinos.forEach((d) => {
-        const items = order.items.filter((it) => (it.destino || order.destinoPedido || 'H') === d);
+        const items = (order.items || []).filter((it) => (it.destino || order.destinoPedido || 'H') === d);
         if (items.length === 0) return;
         const pzsD = items.reduce((s, it) => s + sumVariantes(it.variantes), 0);
         cuerpo += `<h2 class="dest">${destinoInfo(d).label} — ${items.length} artículos · ${pzsD} pzs</h2>`;
@@ -3754,7 +3812,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       cuerpo = tablaDe(order.items);
     }
 
-    const piezasTot = order.items.reduce((s, it) => s + sumVariantes(it.variantes), 0);
+    const piezasTot = (order.items || []).reduce((s, it) => s + sumVariantes(it.variantes), 0);
     const totalesTxt = Object.entries(totals)
       .map(([m, v]) => `<div class="tot-linea"><span>Total ${m}</span><strong>${fmtMoneda(v, m)}</strong></div>`)
       .join('');
@@ -3844,7 +3902,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
               <div>
                 <div><span class="etq">Comprador:</span> ${esc(order.creadoPor || '—')}</div>
                 <div><span class="etq">Estado:</span> ${esc(ESTADOS_PEDIDO[order.status]?.label || '')}</div>
-                <div><span class="etq">Artículos:</span> ${order.items.length} &nbsp;·&nbsp; <strong>${piezasTot} pzs</strong></div>
+                <div><span class="etq">Artículos:</span> ${(order.items || []).length} &nbsp;·&nbsp; <strong>${piezasTot} pzs</strong></div>
                 ${(() => {
                   const emb = embarcadores.find((e) => e.id === order.embarcadorId);
                   if (!emb) return '';
@@ -3860,7 +3918,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
 
           <div class="resumen">
             <div class="izq">
-              ${order.items.length} artículos<br/>
+              ${(order.items || []).length} artículos<br/>
               <strong>${piezasTot} piezas en total</strong>
             </div>
             <div>${totalesTxt}</div>
@@ -3933,8 +3991,8 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       </div>
 
       <div className="space-y-4">
-        {DESTINOS.filter((d) => order.items.some((it) => (it.destino || 'H') === d.id)).map((d) => {
-          const itemsDestino = order.items.filter((it) => (it.destino || 'H') === d.id);
+        {DESTINOS.filter((d) => (order.items || []).some((it) => (it.destino || 'H') === d.id)).map((d) => {
+          const itemsDestino = (order.items || []).filter((it) => (it.destino || 'H') === d.id);
           const totalPzs = itemsDestino.reduce((sum, it) => sum + sumVariantes(it.variantes), 0);
           return (
             <div key={d.id}>
@@ -3971,7 +4029,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
                       <p className="text-xs text-app-gold shrink-0">{fmtMoneda(itemTotal(it), it.costoMoneda)}</p>
                     </div>
                     <div className="mt-2 pt-2 border-t border-app-line space-y-0.5">
-                      {it.variantes.map((v) => (
+                      {(it.variantes || []).map((v) => (
                         <div key={variantKey(v.talla, v.color)} className="flex justify-between text-xs">
                           <span className="text-app-dim2">{varLabel(v)} · {v.color}</span>
                           <span>{v.cantidad} × {fmtMoneda(it.costoMonto, it.costoMoneda)}</span>
@@ -4431,10 +4489,10 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
   const addColor = () => {
     const c = form.colorInput.trim();
     if (!c) return;
-    if (form.colores.includes(c)) { setForm((f) => ({ ...f, colorInput: '' })); return; }
+    if ((form.colores || []).includes(c)) { setForm((f) => ({ ...f, colorInput: '' })); return; }
     setForm((f) => ({ ...f, colores: [...f.colores, c], colorInput: '' }));
   };
-  const removeColor = (c) => setForm((f) => ({ ...f, colores: f.colores.filter((x) => x !== c) }));
+  const removeColor = (c) => setForm((f) => ({ ...f, colores: (f.colores || []).filter((x) => x !== c) }));
 
   const handleSave = () => {
     setError('');
@@ -4444,7 +4502,7 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
     // Marca: obligatoria para USA/Panamá/Honduras, opcional para China
     if ((origen?.id === 'usa' || origen?.id === 'panama' || origen?.id === 'honduras') && !form.marca) return setError('Selecciona una marca.');
     if (!form.tipo && !sinTalla) return setError('Selecciona un tipo de producto.');
-    if (form.colores.length === 0) return setError('Agrega al menos un color.');
+    if ((form.colores || []).length === 0) return setError('Agrega al menos un color.');
     if (!form.costoMonto) return setError('Captura el precio de costo.');
     if (!form.ventaLempiras) return setError('Captura el precio de venta en Lempiras.');
 
@@ -4455,14 +4513,14 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
     if (!productoYaCreado) {
       if (esChina) {
         // China: un producto por color con código BASE-Color
-        const conflictos = form.colores.filter((color) => {
+        const conflictos = (form.colores || []).filter((color) => {
           const codigoColor = sanitizarCodigo(`${codigoBase}-${color}`);
-          return products.some((p) => p.codigo.trim().toLowerCase() === codigoColor.toLowerCase());
+          return products.some((p) => (p.codigo || '').trim().toLowerCase() === codigoColor.toLowerCase());
         });
         if (conflictos.length > 0) return setError(`Ya existen: ${conflictos.map((c) => `${codigoBase}-${c}`).join(', ')}`);
       } else {
         // USA/Panamá/Honduras: un solo producto con todos los colores, código único
-        if (products.some((p) => p.codigo.trim().toLowerCase() === codigoBase.toLowerCase())) {
+        if (products.some((p) => (p.codigo || '').trim().toLowerCase() === codigoBase.toLowerCase())) {
           return setError(`Ya existe un producto con el código ${codigoBase}.`);
         }
       }
@@ -4488,7 +4546,7 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
         codigoBase,
         color: esUno ? colorOrColores : undefined,
         origen: origen?.id || '',
-        descripcion: form.descripcion.trim(),
+        descripcion: (form.descripcion || '').trim(),
         departamento: form.departamento,
         tipo: form.tipo,
         subtipo: form.subtipo,
@@ -4497,8 +4555,8 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
         cinturas: esCinturaLargo ? (tipoSeleccionado?.cinturas || []) : [],
         largos: esCinturaLargo ? (tipoSeleccionado?.largos || []) : [],
         marca: form.marca,
-        ciudad: form.ciudad.trim(),
-        fabrica: form.fabrica.trim(),
+        ciudad: (form.ciudad || '').trim(),
+        fabrica: (form.fabrica || '').trim(),
         colores: esUno ? [colorOrColores] : colorOrColores,
         variantes,
         costoMonto: parseFloat(form.costoMonto),
@@ -4513,7 +4571,7 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
     let nuevos;
     if (esChina) {
       // China: un producto por color
-      nuevos = form.colores.map((color) => {
+      nuevos = (form.colores || []).map((color) => {
         let variantes = [];
         if (pedidoMode) {
           if (sinTalla) {
@@ -4829,7 +4887,7 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
           <button onClick={addColor} className="px-3 rounded-lg border border-app-line text-sm text-app-dim2">Añadir</button>
         </div>
         {/* Atajo: agregar "Surtido" con un toque */}
-        {!form.colores.includes('Surtido') && (
+        {!(form.colores || []).includes('Surtido') && (
           <button
             type="button"
             onClick={() => setForm((f) => ({ ...f, colores: [...f.colores, 'Surtido'], colorInput: '' }))}
@@ -4838,9 +4896,9 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
             + Surtido
           </button>
         )}
-        {form.colores.length > 0 && (
+        {(form.colores || []).length > 0 && (
           <div className="mt-2 space-y-1.5">
-            {form.colores.map((c) => (
+            {(form.colores || []).map((c) => (
               <div key={c} className="flex items-center justify-between bg-app-bg border border-app-line rounded-lg px-3 py-2">
                 <div className="min-w-0">
                   <p className="text-sm">{c}</p>
@@ -4875,9 +4933,9 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
             </button>
           </div>
           {sinTalla ? (
-            pedidoMode && form.colores.length > 0 ? (
+            pedidoMode && (form.colores || []).length > 0 ? (
               <div className="space-y-2">
-                {form.colores.map((color) => (
+                {(form.colores || []).map((color) => (
                   <div key={color} className="flex items-center gap-3">
                     <p className="text-sm flex-1">{color}</p>
                     <input type="number" min={0} placeholder="0"
@@ -4911,14 +4969,14 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
               <CinturaLargoMatrix
                 cinturas={tipoSeleccionado?.cinturas || []}
                 largos={tipoSeleccionado?.largos || []}
-                colores={form.colores.length > 0 ? form.colores : ['_']}
+                colores={(form.colores || []).length > 0 ? form.colores : ['_']}
                 values={matrix}
                 onChange={setMatrix}
               />
             ) : (
               <VariantMatrix
                 tallas={tallasDisponibles}
-                colores={form.colores.length > 0 ? form.colores : ['_']}
+                colores={(form.colores || []).length > 0 ? form.colores : ['_']}
                 values={matrix}
                 onChange={setMatrix}
               />
@@ -5078,11 +5136,11 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
           {pedidoMode
             ? productoYaCreado
               ? `Agregar ${destinoInfo(destinoPedido).emoji} al pedido`
-              : form.colores.length > 1
-                ? `Guardar ${form.colores.length} artículos y agregar al pedido`
+              : (form.colores || []).length > 1
+                ? `Guardar ${(form.colores || []).length} artículos y agregar al pedido`
                 : 'Guardar artículo y agregar al pedido'
-            : form.colores.length > 1
-              ? `Guardar ${form.colores.length} productos (uno por color)`
+            : (form.colores || []).length > 1
+              ? `Guardar ${(form.colores || []).length} productos (uno por color)`
               : 'Guardar producto'}
         </button>
         {pedidoMode && productoYaCreado && (
@@ -5174,9 +5232,9 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
 
   const handleSave = () => {
     setError('');
-    if (!form.codigo.trim()) return setError('El código es obligatorio.');
+    if (!(form.codigo || '').trim()) return setError('El código es obligatorio.');
     // Verificar unicidad excluyendo el propio producto
-    if (products.some((p) => p.id !== product.id && p.codigo.trim().toLowerCase() === form.codigo.trim().toLowerCase())) {
+    if (products.some((p) => p.id !== product.id && (p.codigo || '').trim().toLowerCase() === (form.codigo || '').trim().toLowerCase())) {
       return setError('Ese código ya lo usa otro producto.');
     }
     if (!form.departamento) return setError('Selecciona un departamento.');
@@ -5191,15 +5249,15 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
     onSave({
       ...product,
       codigo: sanitizarCodigo(form.codigo),
-      descripcion: form.descripcion.trim(),
+      descripcion: (form.descripcion || '').trim(),
       departamento: form.departamento,
       tipo: form.tipo,
       subtipo: form.subtipo,
       medida: tipoSeleccionado?.medida || 'simple',
       marca: form.marca,
       genero: form.genero,
-      ciudad: form.ciudad.trim(),
-      fabrica: form.fabrica.trim(),
+      ciudad: (form.ciudad || '').trim(),
+      fabrica: (form.fabrica || '').trim(),
       colores: [form.color],
       color: form.color,
       variantes,
@@ -5464,7 +5522,7 @@ function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marca
     const ids = new Set();
     (orders || []).forEach((o) => {
       if (o.supplierId === proveedorObj.id) {
-        o.items.forEach((it) => ids.add(it.productId));
+        (o.items || []).forEach((it) => ids.add(it.productId));
       }
     });
     return ids;
@@ -6695,7 +6753,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
     const num = numero.trim();
     const pref = prefijo.trim().toUpperCase();
     if (!n) return setError('Escribe el nombre.');
-    if (usuarios.some((u) => u.nombre.toLowerCase() === n.toLowerCase())) return setError('Ya existe un usuario con ese nombre.');
+    if (usuarios.some((u) => (u.nombre || '').toLowerCase() === n.toLowerCase())) return setError('Ya existe un usuario con ese nombre.');
     if (num && usuarios.some((u) => String(u.numero) === num)) return setError(`Ya existe un usuario con el número ${num}.`);
     if (pref && !/^[A-Z]{1,3}$/.test(pref)) return setError('El prefijo debe ser 1 a 3 letras (ej. F, Fr, Fra).');
     // PIN es OPCIONAL — si no se pone, el usuario queda con PIN pendiente
@@ -6802,7 +6860,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
     const nuevos = EQUIPO_COMPRADORES.filter((c) => {
       return !usuarios.some((u) =>
         String(u.numero) === String(c.numero) ||
-        u.nombre.toLowerCase() === c.nombre.toLowerCase()
+        (u.nombre || '').toLowerCase() === (c.nombre || '').toLowerCase()
       );
     }).map((c) => ({ id: uid(), numero: c.numero, nombre: c.nombre, prefijo: null, pinHash: null }));
     setUsuarios([...usuarios, ...nuevos]);
@@ -6819,7 +6877,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
   const cuantosFaltan = EQUIPO_COMPRADORES.filter((c) => {
     return !usuarios.some((u) =>
       String(u.numero) === String(c.numero) ||
-      u.nombre.toLowerCase() === c.nombre.toLowerCase()
+      (u.nombre || '').toLowerCase() === (c.nombre || '').toLowerCase()
     );
   }).length;
 
@@ -6935,7 +6993,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0 flex-1">
                   <span className="w-7 h-7 rounded-full bg-app-bg text-app-gold flex items-center justify-center font-bold text-xs border border-app-line shrink-0">
-                    {u.nombre.charAt(0).toUpperCase()}
+                    {(u.nombre || '?').charAt(0).toUpperCase()}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm">
@@ -6957,7 +7015,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
                             onChange={(e) => setEditPrefijo(e.target.value.replace(/[^A-Za-z]/g, '').slice(0, 3))}
                             onKeyDown={(e) => { if (e.key === 'Enter') guardarPrefijo(u); if (e.key === 'Escape') setEditandoId(null); }}
                             className="w-14 bg-app-bg border border-app-gold rounded px-1.5 py-0.5 text-xs text-center uppercase font-mono"
-                            placeholder={u.nombre.charAt(0).toUpperCase()}
+                            placeholder={(u.nombre || '?').charAt(0).toUpperCase()}
                           />
                           <button onClick={() => guardarPrefijo(u)} className="text-xs text-app-green font-semibold">✓</button>
                           <button onClick={() => setEditandoId(null)} className="text-xs text-app-dim">✕</button>
@@ -7271,7 +7329,7 @@ function Administracion({ usuarios, setUsuarios, usuarioActivo, onLogout, factor
   const [editEmbId, setEditEmbId] = useState(null);
 
   const addEmbarcador = () => {
-    if (!embForm.nombre.trim()) return;
+    if (!(embForm.nombre || '').trim()) return;
     if (editEmbId) {
       setEmbarcadores((embarcadores || []).map((e) => e.id === editEmbId ? { ...e, ...embForm } : e));
     } else {
@@ -7429,7 +7487,7 @@ function Administracion({ usuarios, setUsuarios, usuarioActivo, onLogout, factor
               placeholder="Correo" className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
             <textarea value={embForm.direccion} onChange={(e) => setEmbForm({ ...embForm, direccion: e.target.value })}
               placeholder="Dirección" rows={2} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm resize-none" />
-            <button onClick={addEmbarcador} disabled={!embForm.nombre.trim()}
+            <button onClick={addEmbarcador} disabled={!(embForm.nombre || '').trim()}
               className="w-full py-2.5 rounded-lg bg-app-gold text-app-bg text-sm font-semibold disabled:opacity-50">
               {editEmbId ? 'Guardar cambios' : 'Agregar embarcador'}
             </button>
@@ -7825,8 +7883,8 @@ function Config({ departamentos, setDepartamentos, tipos, setTipos, marcas, setM
     const nuevosDept = IMPORT_DEPARTAMENTOS.filter((d) => !existingDeptLower.has(d.toLowerCase()));
     if (nuevosDept.length > 0) setDepartamentos([...departamentos, ...nuevosDept]);
 
-    const existingTipoLower = new Set(tipos.map((t) => t.nombre.toLowerCase()));
-    const nuevosTipos = IMPORT_TIPOS.filter((t) => !existingTipoLower.has(t.nombre.toLowerCase())).map((t) => ({ id: uid(), ...t }));
+    const existingTipoLower = new Set(tipos.map((t) => (t.nombre || '').toLowerCase()));
+    const nuevosTipos = IMPORT_TIPOS.filter((t) => !existingTipoLower.has((t.nombre || '').toLowerCase())).map((t) => ({ id: uid(), ...t }));
     if (nuevosTipos.length > 0) setTipos([...tipos, ...nuevosTipos]);
 
     setImported(true);
@@ -8033,7 +8091,7 @@ function Config({ departamentos, setDepartamentos, tipos, setTipos, marcas, setM
         )}
 
         <div className="space-y-2">
-          {tipos.filter((t) => t.nombre.toLowerCase().includes(queryTipos.toLowerCase())).map((t) => (
+          {tipos.filter((t) => (t.nombre || '').toLowerCase().includes(queryTipos.toLowerCase())).map((t) => (
             <div key={t.id} className="bg-app-panel border border-app-line rounded-xl p-3">
               <div className="flex items-center justify-between">
                 {editingTipoId === t.id ? (
