@@ -733,7 +733,64 @@ async function borrarFoto(foto) {
   try { await supabase.storage.from(BUCKET_FOTOS).remove(rutas); } catch { /* ignorar */ }
 }
 
-// Acepta tanto el formato viejo (string) como el nuevo ({url, thumb})
+// ------------------------------------------------------------
+// AUDITORÍA — registra quién creó, editó o borró qué y cuándo.
+// Compara la lista anterior contra la nueva (por id) y escribe
+// una fila por cada elemento agregado, cambiado o quitado.
+// No hace falta tocar cada pantalla: basta con llamarla desde
+// las funciones persist* con el antes y el después.
+// ------------------------------------------------------------
+async function registrarAuditoria(tabla, anterior, nuevo, actor, etiqueta) {
+  if (!supabase) return;
+  try {
+    const antes = new Map((anterior || []).map((x) => [x.id, x]));
+    const despues = new Map((nuevo || []).map((x) => [x.id, x]));
+    const filas = [];
+
+    for (const [id, item] of despues) {
+      if (!antes.has(id)) {
+        filas.push({ accion: 'crear', resumen: etiqueta(item), detalle: { despues: item } });
+      } else if (JSON.stringify(antes.get(id)) !== JSON.stringify(item)) {
+        filas.push({ accion: 'editar', resumen: etiqueta(item), detalle: { antes: antes.get(id), despues: item } });
+      }
+    }
+    for (const [id, item] of antes) {
+      if (!despues.has(id)) {
+        filas.push({ accion: 'borrar', resumen: etiqueta(item), detalle: { antes: item } });
+      }
+    }
+    if (!filas.length || filas.length > 200) return; // evita ruido en cargas masivas de catálogos
+
+    await supabase.from('auditoria').insert(
+      filas.map((f) => ({
+        tabla,
+        accion: f.accion,
+        resumen: f.resumen,
+        detalle: f.detalle,
+        usuario_email: actor?.email || null,
+        usuario_nombre: actor?.nombre || null,
+      }))
+    );
+  } catch (e) {
+    console.error('auditoria', e); // nunca debe romper el guardado por esto
+  }
+}
+
+// Variante para valores que no son listas (p. ej. factores de costo, datos de empresa)
+async function registrarAuditoriaObjeto(tabla, anterior, nuevo, actor, resumen) {
+  if (!supabase) return;
+  if (JSON.stringify(anterior) === JSON.stringify(nuevo)) return;
+  try {
+    await supabase.from('auditoria').insert([{
+      tabla, accion: 'editar', resumen,
+      detalle: { antes: anterior, despues: nuevo },
+      usuario_email: actor?.email || null,
+      usuario_nombre: actor?.nombre || null,
+    }]);
+  } catch (e) {
+    console.error('auditoria', e);
+  }
+}
 function urlFoto(foto, preferirMiniatura = true) {
   if (!foto) return null;
   if (typeof foto === 'string') return foto;
@@ -1305,6 +1362,7 @@ export default function PedidosApp() {
   const [sesionAuth, setSesionAuth] = useState(null);   // sesion de Supabase
   const [authCargando, setAuthCargando] = useState(true);
   const [ultimoNombreLogin, setUltimoNombreLogin] = useState('');
+  const sesionAuthRef = useRef(null);   // recuerda el correo activo, para poder registrar el cierre de sesión
   // Modo de visualización: 'auto' (responsive) o 'movil' (forzar vista compacta en PC)
   const [modoVista, setModoVista] = useState('auto');
   // Ancho de la ventana (para responsive)
@@ -1428,9 +1486,33 @@ export default function PedidosApp() {
     };
   }, [sincronizar]);
 
-  const persistProducts = useCallback((next) => { setProducts(next); guardarConCola(KEYS.products, next); }, [guardarConCola]);
-  const persistSuppliers = useCallback((next) => { setSuppliers(next); guardarConCola(KEYS.suppliers, next); }, [guardarConCola]);
-  const persistOrders = useCallback((next) => { setOrders(next); guardarConCola(KEYS.orders, next); }, [guardarConCola]);
+  const actorAuditoria = useCallback(
+    () => ({ email: usuarioActivo?.email || sesionAuth?.user?.email || null, nombre: usuarioActivo?.nombre || null }),
+    [usuarioActivo, sesionAuth]
+  );
+  useEffect(() => { sesionAuthRef.current = sesionAuth; }, [sesionAuth]);
+
+  const persistProducts = useCallback((next) => {
+    setProducts((prev) => {
+      registrarAuditoria('productos', prev, next, actorAuditoria(), (p) => `${p.codigo || ''} — ${p.descripcion || ''}`);
+      return next;
+    });
+    guardarConCola(KEYS.products, next);
+  }, [guardarConCola, actorAuditoria]);
+  const persistSuppliers = useCallback((next) => {
+    setSuppliers((prev) => {
+      registrarAuditoria('proveedores', prev, next, actorAuditoria(), (s) => s.nombre || '');
+      return next;
+    });
+    guardarConCola(KEYS.suppliers, next);
+  }, [guardarConCola, actorAuditoria]);
+  const persistOrders = useCallback((next) => {
+    setOrders((prev) => {
+      registrarAuditoria('pedidos', prev, next, actorAuditoria(), (o) => `Pedido ${o.numero || o.id}`);
+      return next;
+    });
+    guardarConCola(KEYS.orders, next);
+  }, [guardarConCola, actorAuditoria]);
   const persistTasaCambio = useCallback((next) => { setTasaCambio(next); guardarConCola(KEYS.tasaCambio, next); }, [guardarConCola]);
   const persistDepartamentos = useCallback((next) => { setDepartamentos(next); guardarConCola(KEYS.departamentos, next); }, [guardarConCola]);
   const persistTipos = useCallback((next) => { setTipos(next); guardarConCola(KEYS.tipos, next); }, [guardarConCola]);
@@ -1441,8 +1523,20 @@ export default function PedidosApp() {
   const persistCiudades = useCallback((next) => { setCiudades(next); guardarConCola(KEYS.ciudades, next); }, [guardarConCola]);
   const persistFabricas = useCallback((next) => { setFabricas(next); guardarConCola(KEYS.fabricas, next); }, [guardarConCola]);
   const persistPresupuestos = useCallback((next) => { setPresupuestos(next); guardarConCola(KEYS.presupuestos, next); }, [guardarConCola]);
-  const persistUsuarios = useCallback((next) => { setUsuarios(next); guardarConCola(KEYS.usuarios, next); }, [guardarConCola]);
-  const persistFactores = useCallback((next) => { setFactores(next); guardarConCola(KEYS.factores, next); }, [guardarConCola]);
+  const persistUsuarios = useCallback((next) => {
+    setUsuarios((prev) => {
+      registrarAuditoria('compradores', prev, next, actorAuditoria(), (u) => `#${u.numero ?? ''} ${u.nombre || ''}`);
+      return next;
+    });
+    guardarConCola(KEYS.usuarios, next);
+  }, [guardarConCola, actorAuditoria]);
+  const persistFactores = useCallback((next) => {
+    setFactores((prev) => {
+      registrarAuditoriaObjeto('factores_costo', prev, next, actorAuditoria(), 'Cambio en factores de costo puesto en bodega');
+      return next;
+    });
+    guardarConCola(KEYS.factores, next);
+  }, [guardarConCola, actorAuditoria]);
 
   // Guarda/actualiza el borrador de un origen (compartido con el equipo)
   const guardarBorrador = useCallback((origenId, datos) => {
@@ -1506,9 +1600,20 @@ export default function PedidosApp() {
         if (vivo) setAuthCargando(false);
       }
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_evento, sesion) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((evento, sesion) => {
       setSesionAuth(sesion || null);
       if (!sesion) setUsuarioActivo(null);
+      if (evento === 'SIGNED_IN' && sesion?.user?.email) {
+        supabase.from('auditoria').insert([{
+          tabla: 'sesion', accion: 'crear', resumen: 'Inicio de sesión',
+          usuario_email: sesion.user.email, usuario_nombre: null,
+        }]).then(() => {}, () => {});
+      } else if (evento === 'SIGNED_OUT') {
+        supabase.from('auditoria').insert([{
+          tabla: 'sesion', accion: 'borrar', resumen: 'Cierre de sesión',
+          usuario_email: sesionAuthRef.current?.user?.email || null, usuario_nombre: null,
+        }]).then(() => {}, () => {});
+      }
     });
     return () => { vivo = false; sub?.subscription?.unsubscribe(); };
   }, []);
@@ -7007,6 +7112,100 @@ function FabricasList({ fabricas, setFabricas }) {
 }
 
 // ---------- Módulo de Administración (solo admin): Usuarios + Costo puesto en bodega ----------
+// ------------------------------------------------------------
+// Historial de auditoría — quién hizo qué y cuándo.
+// Solo lectura; carga los últimos registros desde Supabase.
+// ------------------------------------------------------------
+const ETIQUETA_ACCION = {
+  crear: { texto: 'Creó', color: 'text-green-400' },
+  editar: { texto: 'Editó', color: 'text-app-gold' },
+  borrar: { texto: 'Borró', color: 'text-red-400' },
+};
+const ETIQUETA_TABLA = {
+  productos: 'Producto', pedidos: 'Pedido', proveedores: 'Proveedor',
+  compradores: 'Comprador', factores_costo: 'Factores de costo', sesion: 'Sesión',
+};
+
+function PanelAuditoria({ soyAdmin }) {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+  const [filtroTabla, setFiltroTabla] = useState('');
+
+  const cargar = useCallback(async () => {
+    if (!supabase) { setCargando(false); return; }
+    setCargando(true);
+    setError('');
+    try {
+      let q = supabase.from('auditoria').select('*').order('fecha', { ascending: false }).limit(150);
+      if (filtroTabla) q = q.eq('tabla', filtroTabla);
+      const { data, error: err } = await q;
+      if (err) throw err;
+      setFilas(data || []);
+    } catch (e) {
+      setError('No se pudo cargar el historial.');
+    } finally {
+      setCargando(false);
+    }
+  }, [filtroTabla]);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  if (!soyAdmin) return null;
+
+  return (
+    <section className="pt-2">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-sm font-semibold text-app-white flex items-center gap-1.5">
+          📜 Historial de actividad
+        </h2>
+        <button onClick={cargar} className="text-xs text-app-dim2 underline">Actualizar</button>
+      </div>
+
+      <select
+        value={filtroTabla}
+        onChange={(e) => setFiltroTabla(e.target.value)}
+        className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm mb-2"
+      >
+        <option value="">Todo</option>
+        {Object.entries(ETIQUETA_TABLA).map(([k, v]) => (
+          <option key={k} value={k}>{v}</option>
+        ))}
+      </select>
+
+      {cargando ? (
+        <p className="text-xs text-app-dim py-3">Cargando…</p>
+      ) : error ? (
+        <p className="text-xs text-app-red py-3">{error}</p>
+      ) : filas.length === 0 ? (
+        <p className="text-xs text-app-dim py-3">Sin actividad registrada todavía.</p>
+      ) : (
+        <div className="space-y-1.5 max-h-96 overflow-y-auto">
+          {filas.map((f) => {
+            const acc = ETIQUETA_ACCION[f.accion] || { texto: f.accion, color: 'text-app-dim2' };
+            return (
+              <div key={f.id} className="bg-app-panel border border-app-line rounded-lg px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span>
+                    <span className={`font-semibold ${acc.color}`}>{acc.texto}</span>
+                    {' '}
+                    <span className="text-app-dim2">{ETIQUETA_TABLA[f.tabla] || f.tabla}</span>
+                  </span>
+                  <span className="text-app-dim3 shrink-0">
+                    {new Date(f.fecha).toLocaleString('es-HN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                {f.resumen && <p className="text-app-white mt-0.5 truncate">{f.resumen}</p>}
+                <p className="text-app-dim3 mt-0.5">{f.usuario_nombre || f.usuario_email || 'Desconocido'}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Administracion({ usuarios, setUsuarios, usuarioActivo, onLogout, factores, setFactores, tasaCambio, setTasaCambio, empresa, setEmpresa, embarcadores, setEmbarcadores }) {
   const [errorLogo, setErrorLogo] = useState('');
   const [showEmbForm, setShowEmbForm] = useState(false);
@@ -7249,6 +7448,8 @@ function Administracion({ usuarios, setUsuarios, usuarioActivo, onLogout, factor
           </div>
         </div>
       </section>
+
+      <PanelAuditoria soyAdmin={!!usuarioActivo?.esAdmin} />
     </div>
   );
 }
