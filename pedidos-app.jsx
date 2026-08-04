@@ -56,7 +56,12 @@ if (typeof window !== 'undefined' && !window.storage) {
         const { error } = await _sb
           .from('app_state')
           .upsert({ key: clave, value: parsed, updated_at: new Date().toISOString() });
-        if (error) console.error('storage.set', error);
+        // IMPORTANTE: lanzar el error para que quien llama pueda reintentar.
+        // Si solo se registrara en consola, el dato se perdería en silencio.
+        if (error) {
+          console.error('storage.set', clave, error);
+          throw error;
+        }
         return { key: clave, value: valor, shared: true };
       }
       localStorage.setItem(prefijoLocal + clave, valor);
@@ -66,7 +71,7 @@ if (typeof window !== 'undefined' && !window.storage) {
       const _sb = cliente();
       if (compartido && _sb) {
         const { error } = await _sb.from('app_state').delete().eq('key', clave);
-        if (error) console.error('storage.delete', error);
+        if (error) { console.error('storage.delete', clave, error); throw error; }
         return { key: clave, deleted: true, shared: true };
       }
       localStorage.removeItem(prefijoLocal + clave);
@@ -1363,6 +1368,11 @@ export default function PedidosApp() {
 
   // Guarda con tolerancia a fallos: si no hay conexión (o falla), encola y reintenta después
   const guardarConCola = useCallback(async (key, value) => {
+    // Salvaguarda: nunca escribir null/undefined, borraría los datos guardados.
+    if (value === null || value === undefined) {
+      console.error('guardarConCola: intento de guardar vacío en', key, '— ignorado');
+      return;
+    }
     // Sin conexión: va directo a la cola y se avisa al usuario
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       pendingRef.current.set(key, value);
@@ -1376,6 +1386,7 @@ export default function PedidosApp() {
       if (pendingRef.current.size === 0) setPendienteSync(false);
     } catch (e) {
       // Solo aquí hay algo que avisar: el guardado falló y queda en cola para reintentar
+      console.error('No se pudo guardar', key, e);
       pendingRef.current.set(key, value);
       setPendienteSync(true);
     }
