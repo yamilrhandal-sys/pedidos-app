@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Plus, Trash2, FileDown, Package, Truck, ClipboardList, X, ChevronRight,
-  ChevronDown, ChevronLeft, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, ScanLine, BarChart3, Copy,
+  ChevronDown, ChevronLeft, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, BarChart3, Copy,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { createClient } from '@supabase/supabase-js';
@@ -512,89 +512,6 @@ function Presupuestos({ presupuestos, setPresupuestos, departamentos, tipos, ord
   );
 }
 
-// ---------- Escáner de código de barras / QR (solo USA y Panamá) ----------
-function EscanerCodigo({ onDetect, onClose }) {
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const detenidoRef = useRef(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let intervalo;
-    (async () => {
-      try {
-        if (!('BarcodeDetector' in window)) {
-          setError('Este dispositivo o navegador no soporta el escáner. Escribe el código manualmente.');
-          return;
-        }
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
-        });
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        const detector = new window.BarcodeDetector({
-          formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'codabar', 'qr_code', 'data_matrix'],
-        });
-        intervalo = setInterval(async () => {
-          if (detenidoRef.current || !videoRef.current) return;
-          try {
-            const codigos = await detector.detect(videoRef.current);
-            if (codigos.length > 0 && codigos[0].rawValue) {
-              detenidoRef.current = true;
-              if (navigator.vibrate) navigator.vibrate(80);
-              onDetect(codigos[0].rawValue.trim());
-            }
-          } catch (_) { /* frame no listo, seguir */ }
-        }, 300);
-      } catch (err) {
-        setError('No se pudo acceder a la cámara. Revisa los permisos del navegador.');
-      }
-    })();
-    return () => {
-      if (intervalo) clearInterval(intervalo);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: 'rgba(0,0,0,0.92)' }}>
-      <div className="flex items-center justify-between px-4 py-3">
-        <p className="text-sm font-medium text-app-white flex items-center gap-2">
-          <ScanLine size={16} className="text-app-gold" /> Escanear código
-        </p>
-        <button onClick={onClose} className="text-app-white p-2"><X size={20} /></button>
-      </div>
-
-      <div className="flex-1 flex items-center justify-center px-4">
-        {error ? (
-          <div className="text-center space-y-3">
-            <AlertCircle size={32} className="text-app-gold mx-auto" />
-            <p className="text-sm text-app-light max-w-xs">{error}</p>
-            <button onClick={onClose} className="text-sm text-app-gold underline">Cerrar</button>
-          </div>
-        ) : (
-          <div className="relative w-full max-w-sm">
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              className="w-full rounded-2xl"
-            />
-            {/* Marco guía */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="w-4/5 h-24 border-2 border-app-gold rounded-lg" style={{ boxShadow: '0 0 0 9999px rgba(0,0,0,0.35)' }} />
-            </div>
-            <p className="text-xs text-app-light text-center mt-3">Apunta al código de barras del producto</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // ---------- Login: usuario + PIN ----------
 // ---------- Borrado seguro: pide confirmación en dos toques ----------
@@ -3157,8 +3074,6 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
   const [draftMatrix, setDraftMatrix] = useState({});
   const [draftDestino, setDraftDestino] = useState('H');
   const [showNewProduct, setShowNewProduct] = useState(false);
-  const [showScanner, setShowScanner] = useState(false);
-  const [codigoEscaneado, setCodigoEscaneado] = useState('');
   const [codigoInicio, setCodigoInicio] = useState(borrador?.codigoInicio || ''); // número de inicio del correlativo (solo China)
   const [embarcadorId, setEmbarcadorId] = useState(borrador?.embarcadorId || ''); // compañía de embarque (USA/Panamá)
   const [ciudadPorDefecto, setCiudadPorDefecto] = useState(borrador?.ciudadPorDefecto || ''); // ciudad elegida en el primer artículo
@@ -3189,23 +3104,6 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
     return () => clearTimeout(timer);
   }, [supplierId, items, notas, codigoInicio, embarcadorId, ciudadPorDefecto]);
 
-  // Manejo del código escaneado: si existe lo abre, si no propone crearlo
-  const handleScan = (codigo) => {
-    setShowScanner(false);
-    const limpio = sanitizarCodigo(codigo);
-    const encontrado = products.find(
-      (p) => p.codigo.toLowerCase() === limpio.toLowerCase() ||
-             (p.codigoBase || '').toLowerCase() === limpio.toLowerCase()
-    );
-    if (encontrado) {
-      setQuery(encontrado.codigo);
-      setShowNewProduct(false);
-      openProduct(encontrado);
-    } else {
-      setCodigoEscaneado(limpio);
-      setShowNewProduct(true);
-    }
-  };
 
   // Solo mostrar resultados cuando el usuario escribe algo en el buscador
   const filtered = query.trim().length === 0 ? [] : products.filter((p) =>
@@ -3491,19 +3389,7 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
               className="w-full bg-app-panel border border-app-line rounded-xl pl-9 pr-3 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
             />
           </div>
-          {origen?.id !== 'china' && (
-            <button
-              onClick={() => setShowScanner(true)}
-              className="px-3.5 rounded-xl bg-app-panel border border-app-line text-app-gold active:bg-app-active"
-              title="Escanear código de barras"
-            >
-              <ScanLine size={18} />
-            </button>
-          )}
         </div>
-        {showScanner && (
-          <EscanerCodigo onDetect={handleScan} onClose={() => setShowScanner(false)} />
-        )}
 
         {!showNewProduct ? (
           <button
@@ -3531,13 +3417,12 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
               usuarioActivoPrefijo={usuarioActivoPrefijo}
               numeroInicioCorrelativo={codigoInicio}
               title="Crear artículo y agregar al pedido"
-              onCancel={() => { setShowNewProduct(false); setCodigoEscaneado(''); }}
-              onSave={(nuevos) => { handleNewProductSaved(nuevos); setCodigoEscaneado(''); }}
+              onCancel={() => setShowNewProduct(false)}
+              onSave={(nuevos) => handleNewProductSaved(nuevos)}
               onUpdateTipos={setTiposExterno}
               onCreateMarca={onCreateMarca}
               onCreateFabrica={onCreateFabrica}
               onCreateCiudad={onCreateCiudad}
-              initialCodigo={codigoEscaneado}
             />
           </div>
         )}
@@ -4460,7 +4345,6 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
   const [destinoPedido, setDestinoPedido] = useState('H'); // destino del pedido (solo pedidoMode)
   const [productoYaCreado, setProductoYaCreado] = useState(false); // en pedidoMode, tras guardar el producto no se recrea
   const [feedbackPedidoMode, setFeedbackPedidoMode] = useState(''); // mensaje temporal de confirmación
-  const [showScannerForm, setShowScannerForm] = useState(false);
 
   // Limpiar feedback tras 2 segundos
   useEffect(() => {
@@ -4793,7 +4677,7 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
             onChange={(e) => { setCodigoEditado(true); setForm({ ...form, codigo: e.target.value.replace(/\s+/g, '-') }); }}
             className="flex-1 bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm font-mono"
           />
-          {origen?.id === 'china' ? (
+          {origen?.id === 'china' && (
             <button
               type="button"
               onClick={() => setForm((f) => ({ ...f, codigo: generarCodigoCorrelativo(products, usuarioActivoNombre, usuarioActivoPrefijo) + (pedidoMode ? destinoPedido : '') }))}
@@ -4802,23 +4686,8 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
             >
               ↺
             </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setShowScannerForm(true)}
-              className="px-3 rounded-lg border border-app-line text-app-gold active:bg-app-active"
-              title="Escanear código de barras"
-            >
-              <ScanLine size={16} />
-            </button>
           )}
         </div>
-        {showScannerForm && (
-          <EscanerCodigo
-            onDetect={(codigo) => { setForm((f) => ({ ...f, codigo: sanitizarCodigo(codigo) })); setShowScannerForm(false); }}
-            onClose={() => setShowScannerForm(false)}
-          />
-        )}
         {origen?.id === 'china' && (
           <p className="text-xs text-app-dim mt-1">Correlativo automático: Y + año + mes + número</p>
         )}
