@@ -1053,7 +1053,10 @@ const APP_STYLES = `
   .rounded-app-lg { border-radius: 18px; }
 `;
 
-function PantallaOrigen({ empresa, onSelect }) {
+function PantallaOrigen({ empresa, onSelect, paisesPermitidos }) {
+  const origenes = paisesPermitidos
+    ? ORIGENES.filter((o) => paisesPermitidos.includes(o.id))
+    : ORIGENES;
   return (
     <div className="min-h-screen bg-app-bg flex flex-col items-center justify-center px-6 gap-4 font-sans">
       <style>{APP_STYLES}</style>
@@ -1066,7 +1069,13 @@ function PantallaOrigen({ empresa, onSelect }) {
         <h1 className="text-2xl font-bold text-app-white">Pedidos</h1>
         <p className="text-sm text-app-dim2 mt-1">¿Desde dónde vas a hacer el pedido?</p>
       </div>
-      {ORIGENES.map((o) => (
+      {origenes.length === 0 && (
+        <p className="text-sm text-app-dim text-center max-w-sm">
+          Tu cuenta no tiene países asignados todavía. Pídele al administrador que te
+          habilite acceso en Administración → Compradores.
+        </p>
+      )}
+      {origenes.map((o) => (
         <button
           key={o.id}
           onClick={() => onSelect(o)}
@@ -1549,11 +1558,13 @@ export default function PedidosApp() {
         (k) => JSON.stringify(anterior[k]) === JSON.stringify(datos[k])
       );
       if (iguales) return prev; // sin cambio, no re-renderizar
-      const next = { ...prev, [origenId]: { ...datos, ultimaEdicion: new Date().toISOString() } };
+      // Quién lo creó: se conserva el creador original si ya existía; si es nuevo, el usuario actual.
+      const creadoPor = anterior?.creadoPor || usuarioActivo?.nombre || '';
+      const next = { ...prev, [origenId]: { ...datos, creadoPor, ultimaEdicion: new Date().toISOString() } };
       guardarConCola(KEYS.borradores, next);
       return next;
     });
-  }, [guardarConCola]);
+  }, [guardarConCola, usuarioActivo]);
   const limpiarBorrador = useCallback((origenId) => {
     setBorradores((prev) => {
       const next = { ...prev };
@@ -1731,9 +1742,33 @@ export default function PedidosApp() {
     );
   }
 
-  // Pantalla de selección de origen
-  if (!origenActivo) {
-    return <PantallaOrigen empresa={empresa} onSelect={(o) => { setOrigenActivo(o); setView('pedidos'); }} />;
+  // ¿El usuario activo es administrador? (mismo criterio que en Administración)
+  // Regla: u.esAdmin === true. Respaldo: si nadie es admin explícito, Yamil Handal lo es.
+  const hayAdminExplicito = (usuarios || []).some((x) => x.esAdmin);
+  const soyAdmin = !!usuarioActivo && (
+    usuarioActivo.esAdmin ||
+    (!hayAdminExplicito && (usuarioActivo.nombre || '').trim().toLowerCase() === 'yamil handal')
+  );
+  // Rol: admin siempre tiene acceso total. Si no es admin, se usa el campo "rol"
+  // ('supervisor' o 'comprador'); si no está definido, se trata como comprador.
+  const miRol = soyAdmin ? 'admin' : (usuarioActivo?.rol === 'supervisor' ? 'supervisor' : 'comprador');
+  const soyPrivilegiado = miRol === 'admin' || miRol === 'supervisor';
+  // Países que el usuario puede ver. Admin/supervisor: todos. Comprador: los que
+  // tenga asignados; si el campo no existe (cuentas antiguas), ve todos por defecto
+  // para no dejar a nadie fuera al activar esta función.
+  const paisesPermitidos = soyPrivilegiado
+    ? ORIGENES.map((o) => o.id)
+    : (Array.isArray(usuarioActivo?.paises) ? usuarioActivo.paises : ORIGENES.map((o) => o.id));
+
+  // Pantalla de selección de origen (o si el país activo ya no está permitido para este usuario)
+  if (!origenActivo || !paisesPermitidos.includes(origenActivo.id)) {
+    return (
+      <PantallaOrigen
+        empresa={empresa}
+        paisesPermitidos={paisesPermitidos}
+        onSelect={(o) => { setOrigenActivo(o); setView('pedidos'); }}
+      />
+    );
   }
 
   // Filtrar datos por origen activo
@@ -1743,18 +1778,25 @@ export default function PedidosApp() {
   const suppliersOrigen = (suppliers || []).filter((s) => s.origen === origenActivo.id);
   const suppliersSinOrigen = (suppliers || []).filter((s) => !s.origen);
   const productsOrigen = (products || []).filter((p) => !p.origen || p.origen === origenActivo.id);
-  const ordersOrigen = (orders || []).filter((o) => !o.origen || o.origen === origenActivo.id);
+
+  const ordersOrigenTodas = (orders || []).filter((o) => !o.origen || o.origen === origenActivo.id);
+  // Un comprador solo ve sus propios pedidos; supervisor y admin ven todos.
+  const ordersOrigen = soyPrivilegiado
+    ? ordersOrigenTodas
+    : ordersOrigenTodas.filter((o) => !o.creadoPor || o.creadoPor === usuarioActivo?.nombre);
+
+  // El pedido "sin terminar" (borrador) de este país es compartido en la base de datos,
+  // pero solo debe verlo quien lo está armando; el administrador ve todos.
+  const borradorDelPais = borradores?.[origenActivo.id] || null;
+  const borradorEsMio = !!borradorDelPais && (
+    soyAdmin || !borradorDelPais.creadoPor || borradorDelPais.creadoPor === usuarioActivo?.nombre
+  );
+  const borradorVisible = borradorEsMio ? borradorDelPais : null;
+  // Si hay un borrador de otra persona, no dejamos empezar uno nuevo (se perdería el suyo)
+  const borradorAjenoBloquea = !!borradorDelPais && !borradorEsMio;
 
   const activeOrder = ordersOrigen.find((o) => o.id === activeOrderId)
-    || orders.find((o) => o.id === activeOrderId); // fallback para pedidos sin origen
-
-  // ¿El usuario activo es administrador? (mismo criterio que en Administración)
-  // Regla: u.esAdmin === true. Respaldo: si nadie es admin explícito, Yamil Handal lo es.
-  const hayAdminExplicito = (usuarios || []).some((x) => x.esAdmin);
-  const soyAdmin = !!usuarioActivo && (
-    usuarioActivo.esAdmin ||
-    (!hayAdminExplicito && (usuarioActivo.nombre || '').trim().toLowerCase() === 'yamil handal')
-  );
+    || (soyPrivilegiado ? orders.find((o) => o.id === activeOrderId) : null); // fallback para pedidos sin origen (solo si puede verlos)
 
   return (
     <div
@@ -1772,6 +1814,7 @@ export default function PedidosApp() {
         modoVista={modoVista}
         onToggleModoVista={toggleModoVista}
         esEscritorio={esEscritorio}
+        borradorAjenoBloquea={borradorAjenoBloquea}
       />
 
       {/* Banner de estado de conexión */}
@@ -1792,7 +1835,7 @@ export default function PedidosApp() {
       ) : null}
 
       {esEscritorio && (
-        <SideNav view={view} setView={setView} soyAdmin={soyAdmin} />
+        <SideNav view={view} setView={setView} soyAdmin={soyAdmin} soyPrivilegiado={soyPrivilegiado} />
       )}
 
       <main className={esEscritorio
@@ -1803,7 +1846,8 @@ export default function PedidosApp() {
           <PedidosList
             orders={ordersOrigen}
             suppliers={suppliersOrigen}
-            borrador={borradores?.[origenActivo.id] || null}
+            borrador={borradorVisible}
+            borradorAjenoBloquea={borradorAjenoBloquea}
             onOpen={(id) => { setActiveOrderId(id); setView('detalle'); }}
             onNew={() => setView('nuevo')}
             onContinuarBorrador={() => setView('nuevo')}
@@ -1828,7 +1872,7 @@ export default function PedidosApp() {
             tasaCambio={tasaCambio}
             setTasaCambio={persistTasaCambio}
             origen={origenActivo}
-            borrador={borradores?.[origenActivo.id] || null}
+            borrador={borradorVisible}
             onGuardarBorrador={(datos) => guardarBorrador(origenActivo.id, datos)}
             usuarioActivoNombre={usuarioActivo?.nombre || ''}
             usuarioActivoPrefijo={usuarioActivo?.prefijo || ''}
@@ -1870,7 +1914,8 @@ export default function PedidosApp() {
               const next = orders.map((o) => (o.id === activeOrder.id ? { ...o, status } : o));
               persistOrders(next);
             }}
-            hayBorradorPendiente={!!(borradores?.[origenActivo.id]?.items?.length > 0)}
+            hayBorradorPendiente={!!(borradorVisible?.items?.length > 0)}
+            borradorAjenoBloquea={borradorAjenoBloquea}
             onDuplicar={() => {
               // Copia los artículos y el proveedor a un pedido nuevo (borrador) y lo abre
               guardarBorrador(origenActivo.id, {
@@ -1905,6 +1950,7 @@ export default function PedidosApp() {
             suppliers={suppliersOrigen}
             usuarioActivoNombre={usuarioActivo?.nombre || ''}
             usuarioActivoPrefijo={usuarioActivo?.prefijo || ''}
+            puedoBorrar={soyPrivilegiado}
             onOpenConfig={() => setView('config')}
             onCreateMarca={crearMarca}
             onCreateFabrica={crearFabrica}
@@ -1917,6 +1963,7 @@ export default function PedidosApp() {
             suppliers={suppliers}
             setSuppliers={persistSuppliers}
             origen={origenActivo}
+            puedoBorrar={soyPrivilegiado}
           />
         )}
 
@@ -1976,7 +2023,7 @@ export default function PedidosApp() {
           />
         )}
 
-        {view === 'reportes' && (
+        {view === 'reportes' && soyPrivilegiado && (
           <Reportes
             orders={orders}
             suppliers={suppliers}
@@ -1987,7 +2034,7 @@ export default function PedidosApp() {
       </main>
 
       {!esEscritorio && (
-        <BottomNav view={view} setView={setView} soyAdmin={soyAdmin} />
+        <BottomNav view={view} setView={setView} soyAdmin={soyAdmin} soyPrivilegiado={soyPrivilegiado} />
       )}
     </div>
   );
@@ -2093,7 +2140,7 @@ function seedSuppliers() {
 }
 
 // ---------- Header / Nav ----------
-function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleModoVista, esEscritorio }) {
+function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleModoVista, esEscritorio, borradorAjenoBloquea = false }) {
   const titles = {
     pedidos: 'Pedidos', nuevo: 'Nuevo pedido', productos: 'Catálogo',
     proveedores: 'Proveedores', detalle: 'Detalle de pedido', config: 'Departamentos y tipos',
@@ -2135,9 +2182,11 @@ function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleMod
           )}
           {view !== 'nuevo' && view !== 'config' && (
             <button
-              onClick={() => setView('nuevo')}
-              className="bg-app-gold text-app-bg rounded-full p-2.5 active:scale-95 transition"
+              onClick={() => { if (!borradorAjenoBloquea) setView('nuevo'); }}
+              disabled={borradorAjenoBloquea}
+              className="bg-app-gold text-app-bg rounded-full p-2.5 active:scale-95 transition disabled:opacity-40"
               aria-label="Nuevo pedido"
+              title={borradorAjenoBloquea ? 'Hay un pedido en progreso de otro comprador en este país' : 'Nuevo pedido'}
             >
               <Plus size={20} strokeWidth={2.5} />
             </button>
@@ -2420,13 +2469,13 @@ function Reportes({ orders, suppliers, tasaCambio, factores }) {
 }
 
 // ---------- SideNav: barra lateral izquierda (solo escritorio) ----------
-function SideNav({ view, setView, soyAdmin }) {
+function SideNav({ view, setView, soyAdmin, soyPrivilegiado }) {
   const items = [
     { key: 'pedidos', label: 'Pedidos', icon: ClipboardList },
     { key: 'productos', label: 'Catálogo', icon: Package },
     { key: 'proveedores', label: 'Proveedores', icon: Truck },
     { key: 'presupuestos', label: 'Presupuesto', icon: Wallet },
-    { key: 'reportes', label: 'Reportes', icon: BarChart3 },
+    ...(soyPrivilegiado ? [{ key: 'reportes', label: 'Reportes', icon: BarChart3 }] : []),
     ...(soyAdmin ? [{ key: 'administracion', label: 'Administración', icon: Settings }] : []),
   ];
   return (
@@ -2458,13 +2507,13 @@ function SideNav({ view, setView, soyAdmin }) {
   );
 }
 
-function BottomNav({ view, setView, soyAdmin }) {
+function BottomNav({ view, setView, soyAdmin, soyPrivilegiado }) {
   const items = [
     { key: 'pedidos', label: 'Pedidos', icon: ClipboardList },
     { key: 'productos', label: 'Catálogo', icon: Package },
     { key: 'proveedores', label: 'Proveed.', icon: Truck },
     { key: 'presupuestos', label: 'Presup.', icon: Wallet },
-    { key: 'reportes', label: 'Reportes', icon: BarChart3 },
+    ...(soyPrivilegiado ? [{ key: 'reportes', label: 'Reportes', icon: BarChart3 }] : []),
     ...(soyAdmin ? [{ key: 'administracion', label: 'Admin', icon: Settings }] : []),
   ];
   return (
@@ -2520,7 +2569,7 @@ function orderTotalsByCurrency(items) {
   return totals;
 }
 
-function PedidosList({ orders, suppliers, borrador, onOpen, onNew, onContinuarBorrador, onDescartarBorrador }) {
+function PedidosList({ orders, suppliers, borrador, borradorAjenoBloquea = false, onOpen, onNew, onContinuarBorrador, onDescartarBorrador }) {
   const [query, setQuery] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('todos');
   const [filtroDestino, setFiltroDestino] = useState('todos');
@@ -2626,14 +2675,30 @@ function PedidosList({ orders, suppliers, borrador, onOpen, onNew, onContinuarBo
     </div>
   ) : null;
 
+  const avisoBorradorAjeno = borradorAjenoBloquea ? (
+    <div className="bg-app-panel border border-app-line rounded-xl p-3 mb-3">
+      <p className="text-sm font-semibold text-app-gold">⏳ Hay un pedido en progreso</p>
+      <p className="text-xs text-app-dim2 mt-0.5">
+        Otro comprador está armando un pedido en este país todavía. Cuando lo termine o lo descarte, podrás crear el tuyo.
+      </p>
+    </div>
+  ) : null;
+
+  const manejarNuevo = () => { if (!borradorAjenoBloquea) onNew(); };
+
   if (orders.length === 0) {
     return (
       <div>
         {bannerBorrador}
+        {avisoBorradorAjeno}
         <div className="flex flex-col items-center text-center mt-16 gap-3">
           <ClipboardList size={36} className="text-app-dim3" />
           <p className="text-app-dim2 text-sm max-w-xs">Aún no hay pedidos. Crea el primero para tu equipo.</p>
-          <button onClick={onNew} className="mt-2 bg-app-gold text-app-bg font-semibold text-sm px-5 py-2.5 rounded-full active:scale-95 transition">
+          <button
+            onClick={manejarNuevo}
+            disabled={borradorAjenoBloquea}
+            className="mt-2 bg-app-gold text-app-bg font-semibold text-sm px-5 py-2.5 rounded-full active:scale-95 transition disabled:opacity-40"
+          >
             Crear pedido
           </button>
         </div>
@@ -3601,7 +3666,7 @@ function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, ma
 }
 
 // ---------- Detalle pedido ----------
-function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, setTasaCambio, onDuplicar, hayBorradorPendiente, empresa, embarcadores = [] }) {
+function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, setTasaCambio, onDuplicar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [confirmDuplicar, setConfirmDuplicar] = useState(false);
   const [pdfHtml, setPdfHtml] = useState(null);   // documento a mostrar
@@ -4062,7 +4127,13 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       {/* Duplicar pedido — útil para reposiciones al mismo proveedor */}
       {onDuplicar && (
         <div className="pt-1">
-          {!confirmDuplicar ? (
+          {borradorAjenoBloquea ? (
+            <div className="bg-app-panel border border-app-line rounded-xl p-3">
+              <p className="text-xs text-app-dim2">
+                ⏳ No puedes duplicar ahora: otro comprador tiene un pedido sin terminar en este país.
+              </p>
+            </div>
+          ) : !confirmDuplicar ? (
             <button
               onClick={() => setConfirmDuplicar(true)}
               className="w-full py-3 rounded-xl border border-app-line text-sm font-medium text-app-sky flex items-center justify-center gap-2 active:bg-app-panel"
@@ -5450,7 +5521,7 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
   );
 }
 
-function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marcas, ciudades, fabricas, factores, tasaCambio, origen, orders, suppliers, usuarioActivoNombre, usuarioActivoPrefijo, onOpenConfig, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marcas, ciudades, fabricas, factores, tasaCambio, origen, orders, suppliers, usuarioActivoNombre, usuarioActivoPrefijo, puedoBorrar = true, onOpenConfig, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState('');
@@ -5716,15 +5787,17 @@ function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marca
                               <button onClick={() => setEditingProductId(p.id)} className="text-xs text-app-sky flex items-center gap-1">
                                 <Pencil size={13} /> Editar
                               </button>
-                              <BotonBorrar
-                                onConfirm={() => removeProduct(p.id)}
-                                size={13}
-                                texto="Eliminar"
-                                aviso={(() => {
-                                  const n = (orders || []).filter((o) => o.items.some((it) => it.productId === p.id)).length;
-                                  return n > 0 ? `⚠ Está en ${n} pedido${n !== 1 ? 's' : ''}` : '';
-                                })()}
-                              />
+                              {puedoBorrar && (
+                                <BotonBorrar
+                                  onConfirm={() => removeProduct(p.id)}
+                                  size={13}
+                                  texto="Eliminar"
+                                  aviso={(() => {
+                                    const n = (orders || []).filter((o) => o.items.some((it) => it.productId === p.id)).length;
+                                    return n > 0 ? `⚠ Está en ${n} pedido${n !== 1 ? 's' : ''}` : '';
+                                  })()}
+                                />
+                              )}
                             </div>
                           </div>
                         )
@@ -6763,6 +6836,21 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
     setEditPrefijo('');
   };
 
+  // Cambia el rol de un comprador. Al pasar a supervisor, se le da acceso a
+  // todos los países (paises se ignora cuando el rol no es 'comprador').
+  const cambiarRol = (u, rol) => {
+    setUsuarios(usuarios.map((x) => x.id === u.id ? { ...x, rol } : x));
+  };
+
+  // Activa/desactiva un país para un comprador
+  const alternarPais = (u, paisId) => {
+    const actuales = Array.isArray(u.paises) ? u.paises : ORIGENES.map((o) => o.id);
+    const next = actuales.includes(paisId)
+      ? actuales.filter((p) => p !== paisId)
+      : [...actuales, paisId];
+    setUsuarios(usuarios.map((x) => x.id === u.id ? { ...x, paises: next } : x));
+  };
+
   // Cambiar/asignar PIN (solo administrador desde la lista)
   const abrirCambioPin = (u) => {
     setPinCambioUsuarioId(u.id);
@@ -7000,6 +7088,55 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
                         </button>
                       )}
                     </div>
+
+                    {/* Rol y países — solo el admin los edita; a sí mismo no se los quita */}
+                    {soyAdmin && !uEsAdmin && (
+                      <div className="mt-2 pt-2 border-t border-app-line space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs text-app-dim3 w-14 shrink-0">Rol</span>
+                          <select
+                            value={u.rol === 'supervisor' ? 'supervisor' : 'comprador'}
+                            onChange={(e) => cambiarRol(u, e.target.value)}
+                            className="bg-app-bg border border-app-line rounded px-2 py-1 text-xs"
+                          >
+                            <option value="comprador">Comprador</option>
+                            <option value="supervisor">Supervisor</option>
+                          </select>
+                        </div>
+                        {(u.rol !== 'supervisor') && (
+                          <div className="flex items-start gap-1.5">
+                            <span className="text-xs text-app-dim3 w-14 shrink-0 mt-1">Países</span>
+                            <div className="flex flex-wrap gap-1">
+                              {ORIGENES.map((o) => {
+                                const activos = Array.isArray(u.paises) ? u.paises : ORIGENES.map((x) => x.id);
+                                const activo = activos.includes(o.id);
+                                return (
+                                  <button
+                                    key={o.id}
+                                    onClick={() => alternarPais(u, o.id)}
+                                    className={`text-xs rounded-full px-2 py-0.5 border ${
+                                      activo
+                                        ? 'bg-app-goldbg border-app-gold/40 text-app-gold'
+                                        : 'bg-app-bg border-app-line text-app-dim3'
+                                    }`}
+                                  >
+                                    {o.emoji} {o.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!soyAdmin && !uEsAdmin && (
+                      <p className="text-xs text-app-dim3 mt-1">
+                        {u.rol === 'supervisor' ? '🔎 Supervisor' : '🛒 Comprador'}
+                        {u.rol !== 'supervisor' && Array.isArray(u.paises) && u.paises.length < ORIGENES.length && (
+                          <> · {u.paises.map((id) => ORIGENES.find((o) => o.id === id)?.emoji).join(' ')}</>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
@@ -8059,7 +8196,7 @@ function Config({ departamentos, setDepartamentos, tipos, setTipos, marcas, setM
 }
 
 // ---------- Proveedores ----------
-function Proveedores({ suppliers, setSuppliers, origen }) {
+function Proveedores({ suppliers, setSuppliers, origen, puedoBorrar = true }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ nombre: '', contacto: '', email: '', telefono: '' });
   const [editingId, setEditingId] = useState(null);
@@ -8208,7 +8345,7 @@ function Proveedores({ suppliers, setSuppliers, origen }) {
                 >
                   Asignar a {origen?.emoji} {origen?.label}
                 </button>
-                <BotonBorrar onConfirm={() => removeSupplier(s.id)} size={14} />
+                {puedoBorrar && <BotonBorrar onConfirm={() => removeSupplier(s.id)} size={14} />}
               </div>
             </div>
           ))}
@@ -8326,7 +8463,7 @@ function Proveedores({ suppliers, setSuppliers, origen }) {
                   <button onClick={() => startEdit(s)} className="text-app-sky active:opacity-70">
                     <Pencil size={15} />
                   </button>
-                  <BotonBorrar onConfirm={() => removeSupplier(s.id)} size={15} />
+                  {puedoBorrar && <BotonBorrar onConfirm={() => removeSupplier(s.id)} size={15} />}
                 </div>
               </div>
             )}
