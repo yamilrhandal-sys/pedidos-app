@@ -1815,6 +1815,8 @@ export default function PedidosApp() {
         onToggleModoVista={toggleModoVista}
         esEscritorio={esEscritorio}
         borradorAjenoBloquea={borradorAjenoBloquea}
+        usuarioActivo={usuarioActivo}
+        onLogout={handleLogout}
       />
 
       {/* Banner de estado de conexión */}
@@ -2140,7 +2142,8 @@ function seedSuppliers() {
 }
 
 // ---------- Header / Nav ----------
-function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleModoVista, esEscritorio, borradorAjenoBloquea = false }) {
+function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleModoVista, esEscritorio, borradorAjenoBloquea = false, usuarioActivo = null, onLogout }) {
+  const [menuUsuario, setMenuUsuario] = useState(false);
   const titles = {
     pedidos: 'Pedidos', nuevo: 'Nuevo pedido', productos: 'Catálogo',
     proveedores: 'Proveedores', detalle: 'Detalle de pedido', config: 'Departamentos y tipos',
@@ -2190,6 +2193,44 @@ function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleMod
             >
               <Plus size={20} strokeWidth={2.5} />
             </button>
+          )}
+
+          {/* Menú de usuario: disponible en todas las pantallas, para cualquier rol */}
+          {usuarioActivo && (
+            <div className="relative">
+              <button
+                onClick={() => setMenuUsuario((v) => !v)}
+                className="w-9 h-9 rounded-full bg-app-panel border border-app-line text-app-gold font-bold text-sm flex items-center justify-center active:bg-app-active"
+                aria-label="Menú de usuario"
+              >
+                {(usuarioActivo.nombre || '?').charAt(0).toUpperCase()}
+              </button>
+              {menuUsuario && (
+                <>
+                  {/* Capa para cerrar al tocar fuera */}
+                  <div className="fixed inset-0 z-30" onClick={() => setMenuUsuario(false)} />
+                  <div className="absolute right-0 mt-2 w-56 bg-app-panel border border-app-line rounded-xl shadow-app-lg z-40 overflow-hidden">
+                    <div className="px-3 py-2.5 border-b border-app-line">
+                      <p className="text-sm text-app-white truncate">{usuarioActivo.nombre}</p>
+                      {usuarioActivo.email && (
+                        <p className="text-xs text-app-dim2 truncate">{usuarioActivo.email}</p>
+                      )}
+                      <p className="text-xs text-app-dim3 mt-0.5">
+                        {usuarioActivo.esAdmin ? '👑 Administrador'
+                          : usuarioActivo.rol === 'supervisor' ? '🔎 Supervisor'
+                          : '🛒 Comprador'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => { setMenuUsuario(false); onLogout && onLogout(); }}
+                      className="w-full text-left px-3 py-2.5 text-sm text-app-red2 active:bg-app-active"
+                    >
+                      Cerrar sesión
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>
