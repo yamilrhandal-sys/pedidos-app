@@ -3170,6 +3170,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   const [expandedId, setExpandedId] = useState(null);
   const [draftMatrix, setDraftMatrix] = useState({});
   const [draftDestino, setDraftDestino] = useState('H');
+  const [draftPrecio, setDraftPrecio] = useState('');   // precio editable del producto expandido
   const [showNewProduct, setShowNewProduct] = useState(false);
   const [codigoInicio, setCodigoInicio] = useState(borrador?.codigoInicio || ''); // número de inicio del correlativo (solo China)
   const [embarcadorId, setEmbarcadorId] = useState(borrador?.embarcadorId || ''); // compañía de embarque (USA/Panamá)
@@ -3210,6 +3211,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   const openProduct = (p) => {
     if (expandedId === p.id) { setExpandedId(null); return; }
     setExpandedId(p.id);
+    setDraftPrecio(String(p.costoMonto ?? ''));   // precio actual, editable
     const esCL = p.medida === 'cintura_largo';
     if (esCL) {
       // Cintura/largo se maneja por país (un item por destino)
@@ -3227,7 +3229,19 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
     }
   };
 
-  const confirmAdd = (product) => {
+  // Si el precio se editó en el panel, lo guarda en el catálogo y devuelve el producto actualizado
+  const aplicarPrecioEditado = (product) => {
+    const nuevoPrecio = parseFloat(draftPrecio);
+    if (isNaN(nuevoPrecio) || nuevoPrecio === product.costoMonto) return product;
+    const actualizado = { ...product, costoMonto: nuevoPrecio };
+    if (setProducts) {
+      setProducts((prev) => (prev || []).map((p) => (p.id === product.id ? { ...p, costoMonto: nuevoPrecio } : p)));
+    }
+    return actualizado;
+  };
+
+  const confirmAdd = (productoOriginal) => {
+    const product = aplicarPrecioEditado(productoOriginal);
     const esCL = product.medida === 'cintura_largo';
     const variantes = esCL ? matrixCLToVariantes(draftMatrix) : matrixToVariantes(draftMatrix);
     if (variantes.length === 0) return;
@@ -3251,7 +3265,8 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   };
 
   // Agregar capturando ambos países a la vez desde la matriz dual
-  const confirmAddDual = (product) => {
+  const confirmAddDual = (productoOriginal) => {
+    const product = aplicarPrecioEditado(productoOriginal);
     const variantesH = dualMatrixToVariantes(draftMatrix, 'H');
     const variantesG = dualMatrixToVariantes(draftMatrix, 'G');
     if (variantesH.length === 0 && variantesG.length === 0) return;
@@ -3275,6 +3290,19 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   };
 
   const removeItem = (productId, destino) => setItems((prev) => prev.filter((it) => !(it.productId === productId && (it.destino || 'H') === (destino || 'H'))));
+
+  // Abre el editor de un artículo que ya está en el pedido: busca el producto,
+  // lo expande con las cantidades/colores actuales y hace scroll hasta él.
+  const editarItemDelPedido = (it) => {
+    const producto = products.find((p) => p.id === it.productId);
+    if (!producto) {
+      // El producto ya no está en el catálogo: al menos permite ajustar por código
+      setQuery(it.codigo || it.descripcion || '');
+      return;
+    }
+    setQuery(producto.codigo || '');            // lo trae al buscador
+    setTimeout(() => openProduct(producto), 50); // lo expande con sus valores
+  };
 
   const handleNewProductSaved = (nuevos) => {
     // Actualizar catálogo: si un producto con ese código YA existe (segundo pase para el otro
@@ -3561,6 +3589,20 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
                 </button>
                 {expandedId === p.id && (
                   <div className="px-3 pb-3 bg-app-panel">
+                    <div className="mb-3">
+                      <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">
+                        Precio unitario ({p.costoMoneda || 'USD'})
+                      </label>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        value={draftPrecio}
+                        onChange={(e) => setDraftPrecio(e.target.value)}
+                        placeholder="Precio del producto"
+                        className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                      />
+                      <p className="text-xs text-app-dim3 mt-1">Al agregar, este precio se guarda también en el catálogo.</p>
+                    </div>
                     {esCL ? (
                       <>
                         <div className="mb-2">
@@ -3637,6 +3679,14 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
                     </p>
                   </div>
                   <span className="text-xs text-app-dim2 shrink-0">{fmtMoneda(itemTotal(it), it.costoMoneda)}</span>
+                  <button
+                    onClick={() => editarItemDelPedido(it)}
+                    className="text-app-sky shrink-0 active:opacity-70"
+                    aria-label="Editar artículo"
+                    title="Editar cantidades, colores y precio"
+                  >
+                    <Pencil size={15} />
+                  </button>
                   <BotonBorrar onConfirm={() => removeItem(it.productId, it.destino)} size={16} />
                 </div>
                 <p className="text-xs text-app-dim mt-1.5">
