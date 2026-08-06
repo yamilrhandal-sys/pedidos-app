@@ -3293,15 +3293,46 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
 
   // Abre el editor de un artículo que ya está en el pedido: busca el producto,
   // lo expande con las cantidades/colores actuales y hace scroll hasta él.
+  // Estado del modal de edición de un artículo ya en el pedido
+  const [itemEditando, setItemEditando] = useState(null);   // el item que se está editando
+  const [editMatrix, setEditMatrix] = useState({});
+  const [editPrecio, setEditPrecio] = useState('');
+
   const editarItemDelPedido = (it) => {
     const producto = products.find((p) => p.id === it.productId);
-    if (!producto) {
-      // El producto ya no está en el catálogo: al menos permite ajustar por código
-      setQuery(it.codigo || it.descripcion || '');
-      return;
+    const esCL = producto?.medida === 'cintura_largo' || (it.variantes || []).some((v) => v.cintura);
+    // Reconstruir la matriz con el mismo formato de claves que usa el editor
+    setEditMatrix(esCL ? variantesToMatrixCL(it.variantes) : variantesToMatrix(it.variantes));
+    setEditPrecio(String(it.costoMonto ?? ''));
+    setItemEditando(it);
+  };
+
+  const guardarItemEditado = () => {
+    if (!itemEditando) return;
+    const it = itemEditando;
+    const producto = products.find((p) => p.id === it.productId);
+    const esCL = producto?.medida === 'cintura_largo' ||
+      (it.variantes || []).some((v) => v.cintura);
+    const variantes = esCL ? matrixCLToVariantes(editMatrix) : matrixToVariantes(editMatrix);
+    if (variantes.length === 0) { setItemEditando(null); return; }
+
+    const nuevoPrecio = parseFloat(editPrecio);
+    const precioValido = !isNaN(nuevoPrecio) && nuevoPrecio > 0;
+
+    // Actualizar el item dentro del pedido
+    setItems((prev) => prev.map((x) =>
+      x.productId === it.productId && (x.destino || 'H') === (it.destino || 'H')
+        ? { ...x, variantes, costoMonto: precioValido ? nuevoPrecio : x.costoMonto }
+        : x
+    ));
+
+    // Si el precio cambió, guardarlo también en el catálogo
+    if (precioValido && producto && nuevoPrecio !== producto.costoMonto && setProducts) {
+      setProducts((prev) => (prev || []).map((p) =>
+        p.id === it.productId ? { ...p, costoMonto: nuevoPrecio } : p
+      ));
     }
-    setQuery(producto.codigo || '');            // lo trae al buscador
-    setTimeout(() => openProduct(producto), 50); // lo expande con sus valores
+    setItemEditando(null);
   };
 
   const handleNewProductSaved = (nuevos) => {
@@ -3734,6 +3765,66 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
           onCerrar={() => setVisor(null)}
         />
       )}
+
+      {itemEditando && (() => {
+        const prod = products.find((p) => p.id === itemEditando.productId);
+        const esCL = prod?.medida === 'cintura_largo' || (itemEditando.variantes || []).some((v) => v.cintura);
+        const coloresItem = [...new Set((itemEditando.variantes || []).map((v) => v.color).filter(Boolean))];
+        const colores = [...new Set([...(prod?.colores || []), ...coloresItem])];
+        const tallasProd = prod?.tallas?.length > 0 ? prod.tallas : [...new Set((itemEditando.variantes || []).map((v) => v.talla).filter(Boolean))];
+        const cinturasProd = prod?.cinturas || [...new Set((itemEditando.variantes || []).map((v) => v.cintura).filter(Boolean))];
+        const largosProd = prod?.largos || [...new Set((itemEditando.variantes || []).map((v) => v.largo).filter(Boolean))];
+        return (
+          <div
+            className="fixed inset-0 z-50 flex flex-col bg-app-bg"
+            style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-app-line">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold truncate">Editar artículo</p>
+                <p className="text-xs text-app-dim2 truncate">
+                  <span className="font-mono text-app-gold">{codigoConDestino(itemEditando)}</span>
+                  {itemEditando.destino ? ` ${destinoInfo(itemEditando.destino).emoji}` : ''} · {itemEditando.descripcion}
+                </p>
+              </div>
+              <button onClick={() => setItemEditando(null)} className="p-2 text-app-dim2" aria-label="Cerrar">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+              <div>
+                <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">
+                  Precio unitario ({itemEditando.costoMoneda || 'USD'})
+                </label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={editPrecio}
+                  onChange={(e) => setEditPrecio(e.target.value)}
+                  className="w-full bg-app-panel border border-app-line rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+                <p className="text-xs text-app-dim3 mt-1">Al guardar, este precio se actualiza también en el catálogo.</p>
+              </div>
+              <div>
+                <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">Cantidades</label>
+                {esCL ? (
+                  <CinturaLargoMatrix cinturas={cinturasProd} largos={largosProd} colores={colores} values={editMatrix} onChange={setEditMatrix} />
+                ) : (
+                  <VariantMatrix tallas={tallasProd} colores={colores} values={editMatrix} onChange={setEditMatrix} />
+                )}
+              </div>
+            </div>
+            <div className="px-4 py-3 border-t border-app-line flex gap-2">
+              <button onClick={() => setItemEditando(null)} className="flex-1 py-3 rounded-lg border border-app-line text-sm">
+                Cancelar
+              </button>
+              <button onClick={guardarItemEditado} className="flex-1 py-3 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">
+                Guardar cambios
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
