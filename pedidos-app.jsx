@@ -3726,7 +3726,31 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       });
     });
     rows.push({});
-    Object.entries(totals).forEach(([m, v]) => rows.push({ Código: 'TOTAL', Moneda: m, Subtotal: v }));
+
+    // Subtotales por destino (Honduras, Afiliada) antes del total general
+    const porDestino = {};
+    (order.items || []).forEach((it) => {
+      const nombre = nombreDestino(it) || 'Sin destino';
+      const moneda = it.costoMoneda || 'USD';
+      porDestino[nombre] = porDestino[nombre] || { pzs: 0, montos: {} };
+      const pzs = sumVariantes(it.variantes);
+      porDestino[nombre].pzs += pzs;
+      porDestino[nombre].montos[moneda] =
+        (porDestino[nombre].montos[moneda] || 0) + pzs * (parseFloat(it.costoMonto) || 0);
+    });
+    const hayVariosDestinos = Object.keys(porDestino).length > 1;
+    if (hayVariosDestinos) {
+      Object.entries(porDestino).forEach(([nombre, d]) => {
+        Object.entries(d.montos).forEach(([m, v]) => {
+          rows.push({ Código: `SUBTOTAL ${nombre}`, Cantidad: d.pzs, Moneda: m, Subtotal: v });
+        });
+      });
+      rows.push({});
+    }
+
+    Object.entries(totals).forEach(([m, v]) =>
+      rows.push({ Código: 'TOTAL', Cantidad: (order.items || []).reduce((s, it) => s + sumVariantes(it.variantes), 0), Moneda: m, Subtotal: v })
+    );
 
     // Cabecera con los datos generales del pedido
     const etiquetaEstado = ESTADOS_PEDIDO[order.status]?.label || order.status || '';
@@ -3833,8 +3857,18 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
         const items = (order.items || []).filter((it) => (it.destino || order.destinoPedido || 'H') === d);
         if (items.length === 0) return;
         const pzsD = items.reduce((s, it) => s + sumVariantes(it.variantes), 0);
+        // Subtotal de este destino, por moneda
+        const totD = {};
+        items.forEach((it) => {
+          const m = it.costoMoneda || 'USD';
+          totD[m] = (totD[m] || 0) + sumVariantes(it.variantes) * (parseFloat(it.costoMonto) || 0);
+        });
+        const subtotalTxt = Object.entries(totD)
+          .map(([m, v]) => `<span class="sub-item">Subtotal ${m} <strong>${fmtMoneda(v, m)}</strong></span>`)
+          .join('');
         cuerpo += `<h2 class="dest">${destinoInfo(d).label} — ${items.length} artículos · ${pzsD} pzs</h2>`;
         cuerpo += tablaDe(items);
+        cuerpo += `<div class="subtotal">${pzsD} pzs${subtotalTxt}</div>`;
       });
     } else {
       cuerpo = tablaDe(order.items);
@@ -3891,6 +3925,14 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
               border: 1px dashed #ddd; background: #f5f5f5;
             }
             .lin-det { color: #888; font-size: 9px; margin-top: 2px; }
+            .subtotal {
+              display: flex; justify-content: flex-end; align-items: center; gap: 18px;
+              margin: -4px 0 14px; padding: 6px 8px;
+              background: #f3f3f3; border-radius: 3px;
+              font-size: 11px; color: #444; page-break-inside: avoid;
+            }
+            .subtotal .sub-item { margin-left: 14px; }
+            .subtotal strong { color: #1a1a1a; font-size: 12px; margin-left: 4px; }
             .resumen { margin-top: 16px; border-top: 2px solid #1a1a1a; padding-top: 9px; display: flex; justify-content: space-between; align-items: flex-start; }
             .resumen .izq { font-size: 11px; color: #555; line-height: 1.7; }
             .tot-linea { display: flex; justify-content: space-between; gap: 22px; font-size: 13px; padding: 2px 0; }
@@ -4111,7 +4153,14 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
 
       {/* Vista previa del documento — se muestra dentro de la app */}
       {pdfHtml && (
-        <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: 'rgba(0,0,0,0.85)' }}>
+        <div
+          className="fixed inset-0 z-50 flex flex-col"
+          style={{
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            paddingTop: 'env(safe-area-inset-top)',
+            paddingBottom: 'env(safe-area-inset-bottom)',
+          }}
+        >
           <div className="flex items-center justify-between gap-2 px-4 py-3 bg-app-panel border-b border-app-line">
             <div className="min-w-0">
               <p className="text-sm font-semibold truncate">
