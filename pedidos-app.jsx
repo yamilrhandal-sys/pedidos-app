@@ -279,7 +279,7 @@ function calcularGastoPresupuestos(orders, rate) {
   return gasto;
 }
 
-function Presupuestos({ presupuestos, setPresupuestos, departamentos, tipos, orders, tasaCambio, onBack }) {
+function Presupuestos({ presupuestos, setPresupuestos, departamentos = [], tipos = [], orders = [], tasaCambio, onBack }) {
   const [destino, setDestino] = useState('H');
   const [deptoSel, setDeptoSel] = useState('');
   const [tipoSel, setTipoSel] = useState('');
@@ -354,7 +354,7 @@ function Presupuestos({ presupuestos, setPresupuestos, departamentos, tipos, ord
   };
 
   // Presupuestos existentes del destino activo
-  const delDestino = Object.entries(presupuestos)
+  const delDestino = Object.entries(presupuestos || {})
     .filter(([k]) => k.startsWith(`${destino}|`))
     .map(([k, v]) => {
       const [, depto, tipo] = k.split('|');
@@ -1318,24 +1318,43 @@ class LimiteDeError extends React.Component {
   }
 }
 
+// Estado para listas: garantiza que el valor SIEMPRE sea un arreglo.
+// Si algo intenta guardar un objeto, null o un valor suelto (por datos
+// antiguos o una respuesta inesperada del servidor), se ignora y queda [].
+// Así ningún .filter/.map del resto de la app puede reventar.
+function useLista(inicial = []) {
+  const [valor, setValor] = useState(Array.isArray(inicial) ? inicial : []);
+  const setSeguro = useCallback((nuevo) => {
+    setValor((prev) => {
+      const resuelto = typeof nuevo === 'function' ? nuevo(prev) : nuevo;
+      if (!Array.isArray(resuelto)) {
+        console.error('useLista: se intentó guardar algo que no es lista:', resuelto);
+        return prev;
+      }
+      return resuelto;
+    });
+  }, []);
+  return [valor, setSeguro];
+}
+
 function PedidosAppInterno() {
   const [view, setView] = useState('pedidos');
   const [loading, setLoading] = useState(true);
   const [origenActivo, setOrigenActivo] = useState(null); // null = pantalla de selección
 
-  const [products, setProducts] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [departamentos, setDepartamentos] = useState([]);
-  const [tipos, setTipos] = useState([]);
-  const [marcas, setMarcas] = useState([]);
+  const [products, setProducts] = useLista([]);
+  const [suppliers, setSuppliers] = useLista([]);
+  const [orders, setOrders] = useLista([]);
+  const [departamentos, setDepartamentos] = useLista([]);
+  const [tipos, setTipos] = useLista([]);
+  const [marcas, setMarcas] = useLista([]);
   const [empresa, setEmpresa] = useState({});
-  const [embarcadores, setEmbarcadores] = useState([]);
+  const [embarcadores, setEmbarcadores] = useLista([]);
   const [marcasProveedores, setMarcasProveedores] = useState({}); // marca -> [supplierId]
-  const [ciudades, setCiudades] = useState([]);
-  const [fabricas, setFabricas] = useState([]);
+  const [ciudades, setCiudades] = useLista([]);
+  const [fabricas, setFabricas] = useLista([]);
   const [presupuestos, setPresupuestos] = useState({});
-  const [usuarios, setUsuarios] = useState([]);
+  const [usuarios, setUsuarios] = useLista([]);
   const [factores, setFactores] = useState({ china: 32, usa: 22, panama: 18, honduras: 1 });
   const [borradores, setBorradores] = useState({}); // { china: {...}, usa: {...}, panama: {...} }
   const [usuarioActivo, setUsuarioActivo] = useState(null);
@@ -1384,12 +1403,15 @@ function PedidosAppInterno() {
         loadPersonal(MODO_KEY, 'auto'),
         loadPersonal(ULTIMO_USUARIO_KEY, null),
       ]);
-      setProducts(p);
-      setSuppliers(s);
-      setOrders(o);
-      setDepartamentos(d);
-      setTipos(t);
-      setMarcas(mc);
+      // Salvaguarda: garantiza que las listas nunca queden en un tipo incorrecto,
+      // aunque el shared storage devuelva algo inesperado por residuos históricos.
+      const arr = (v) => (Array.isArray(v) ? v : []);
+      setProducts(arr(p));
+      setSuppliers(arr(s));
+      setOrders(arr(o));
+      setDepartamentos(arr(d));
+      setTipos(arr(t));
+      setMarcas(arr(mc));
       if (emp && typeof emp === 'object') setEmpresa(emp);
       if (Array.isArray(embs)) setEmbarcadores(embs);
       if (mcp && typeof mcp === 'object') setMarcasProveedores(mcp);
@@ -1752,11 +1774,11 @@ function PedidosAppInterno() {
   // Proveedores del origen activo. El filtro es ESTRICTO: cada proveedor pertenece a un
   // solo país de compra. Los que quedaron sin país (creados antes de esta regla) se
   // muestran aparte en la pantalla de Proveedores para asignarles el suyo.
-  const suppliersOrigen = (suppliers || []).filter((s) => s.origen === origenActivo.id);
-  const suppliersSinOrigen = (suppliers || []).filter((s) => !s.origen);
-  const productsOrigen = (products || []).filter((p) => !p.origen || p.origen === origenActivo.id);
+  const suppliersOrigen = (Array.isArray(suppliers) ? suppliers : []).filter((s) => s.origen === origenActivo.id);
+  const suppliersSinOrigen = (Array.isArray(suppliers) ? suppliers : []).filter((s) => !s.origen);
+  const productsOrigen = (Array.isArray(products) ? products : []).filter((p) => !p.origen || p.origen === origenActivo.id);
 
-  const ordersOrigenTodas = (orders || []).filter((o) => !o.origen || o.origen === origenActivo.id);
+  const ordersOrigenTodas = (Array.isArray(orders) ? orders : []).filter((o) => !o.origen || o.origen === origenActivo.id);
   // Un comprador solo ve sus propios pedidos; supervisor y admin ven todos.
   const ordersOrigen = soyPrivilegiado
     ? ordersOrigenTodas
@@ -2225,7 +2247,7 @@ function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleMod
 }
 
 // ---------- Reportes: jerarquía Origen → Comprador → Proveedor → Marca → Depto → Tipo ----------
-function Reportes({ orders, suppliers, tasaCambio, factores }) {
+function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const [rangoFecha, setRangoFecha] = useState('all'); // all | 30d | 90d | 12m | custom
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
@@ -2252,13 +2274,19 @@ function Reportes({ orders, suppliers, tasaCambio, factores }) {
       const d = fechaDesde ? new Date(fechaDesde) : null;
       const h = fechaHasta ? new Date(fechaHasta) : null;
       return orders.filter((o) => {
+        if (!o.fecha) return true;              // pedidos sin fecha: no se descartan
         const f = new Date(o.fecha);
+        if (isNaN(f)) return true;              // fecha ilegible: tampoco se descarta
         if (d && f < d) return false;
         if (h && f > h) return false;
         return true;
       });
     }
-    return orders.filter((o) => new Date(o.fecha) >= desde);
+    return orders.filter((o) => {
+      if (!o.fecha) return true;
+      const f = new Date(o.fecha);
+      return isNaN(f) ? true : f >= desde;
+    });
   })();
 
   // Calcular totales de un item en Lempiras (costo bodega) y USD
@@ -2326,7 +2354,7 @@ function Reportes({ orders, suppliers, tasaCambio, factores }) {
                   Departamento: depto,
                   Tipo: tipo,
                   Piezas: tot.pzs,
-                  'Total USD': parseFloat(tot.usd.toFixed(2)),
+                  'Total USD': parseFloat((tot.usd || 0).toFixed(2)),
                 });
               });
             });
@@ -2596,7 +2624,7 @@ function orderTotalsByCurrency(items) {
   return totals;
 }
 
-function PedidosList({ orders, suppliers, borrador, borradorAjenoBloquea = false, onOpen, onNew, onContinuarBorrador, onDescartarBorrador }) {
+function PedidosList({ orders = [], suppliers = [], borrador, borradorAjenoBloquea = false, onOpen, onNew, onContinuarBorrador, onDescartarBorrador }) {
   const [query, setQuery] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('todos');
   const [filtroDestino, setFiltroDestino] = useState('todos');
@@ -2834,7 +2862,7 @@ function PedidosList({ orders, suppliers, borrador, borradorAjenoBloquea = false
 }
 
 // ---------- Variant matrix (shared between Catalogo y Pedido) ----------
-function VariantMatrix({ tallas, colores, values, onChange, accent = '#e8a33d' }) {
+function VariantMatrix({ tallas = [], colores = [], values, onChange, accent = '#e8a33d' }) {
   // values: { "talla__color": cantidad }
   if (tallas.length === 0 || colores.length === 0) {
     return (
@@ -2907,7 +2935,7 @@ function variantesToMatrix(variantes) {
 // Claves: "talla__color__H" y "talla__color__G"
 const dualKey = (talla, color, destino) => `${talla}__${color}__${destino}`;
 
-function VariantMatrixDual({ tallas, colores, values, onChange, accent = '#e8a33d' }) {
+function VariantMatrixDual({ tallas = [], colores = [], values, onChange, accent = '#e8a33d' }) {
   if (tallas.length === 0 || colores.length === 0) {
     return (
       <p className="text-xs text-app-dim italic">
@@ -3004,7 +3032,7 @@ function variantesToMatrixCL(variantes) {
   return map;
 }
 
-function CinturaLargoMatrix({ cinturas, largos, colores, values, onChange, accent = '#e8a33d' }) {
+function CinturaLargoMatrix({ cinturas, largos, colores = [], values, onChange, accent = '#e8a33d' }) {
   if (cinturas.length === 0 || largos.length === 0 || colores.length === 0) {
     return (
       <p className="text-xs text-app-dim italic">
@@ -3133,7 +3161,7 @@ function TotalesConversion({ totals, tasaCambio, setTasaCambio, label = 'Total e
   );
 }
 
-function NuevoPedido({ products, setProducts, departamentos, tipos, setTipos, marcas, marcasProveedores = {}, ciudades, fabricas, factores, suppliers, embarcadores = [], tasaCambio, setTasaCambio, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [supplierId, setSupplierId] = useState(borrador?.supplierId || suppliers[0]?.id || '');
   const [items, setItems] = useState(borrador?.items || []);
@@ -4392,7 +4420,7 @@ function SearchableSelect({ id, value, onChange, options, placeholder, openId, s
 }
 
 // ---------- Formulario de producto (reutilizable: catálogo y pedido) ----------
-function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadPorDefecto = '', onSetCiudadPorDefecto, fabricas, factores, tasaCambio, onSave, onCancel, onUpdateTipos, onCreateMarca, onCreateFabrica, onCreateCiudad, origen, pedidoMode = false, initialCodigo = '', usuarioActivoNombre = '', usuarioActivoPrefijo = '', numeroInicioCorrelativo = '', title = 'Nuevo producto' }) {
+function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], ciudadPorDefecto = '', onSetCiudadPorDefecto, fabricas = [], factores, tasaCambio, onSave, onCancel, onUpdateTipos, onCreateMarca, onCreateFabrica, onCreateCiudad, origen, pedidoMode = false, initialCodigo = '', usuarioActivoNombre = '', usuarioActivoPrefijo = '', numeroInicioCorrelativo = '', title = 'Nuevo producto' }) {
   const monedaOrigen = origen?.id === 'china' ? 'RMB' : (origen?.id === 'honduras' ? 'HNL' : 'USD');
   const [form, setForm] = useState({
     ...emptyForm(),
@@ -5157,7 +5185,7 @@ function ProductForm({ products, departamentos, tipos, marcas, ciudades, ciudadP
 }
 
 // ---------- Formulario de edición de producto ----------
-function EditProductForm({ product, products, departamentos, tipos, marcas, ciudades, fabricas, onSave, onCancel }) {
+function EditProductForm({ product, products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], fabricas = [], onSave, onCancel }) {
   const tipoObj = tipos.find((t) => t.nombre === product.tipo);
   const esCLInit = tipoObj?.medida === 'cintura_largo';
 
@@ -5500,7 +5528,7 @@ function EditProductForm({ product, products, departamentos, tipos, marcas, ciud
   );
 }
 
-function Catalogo({ products, setProducts, departamentos, tipos, setTipos, marcas, ciudades, fabricas, factores, tasaCambio, origen, orders, suppliers, usuarioActivoNombre, usuarioActivoPrefijo, puedoBorrar = true, onOpenConfig, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+function Catalogo({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], ciudades = [], fabricas = [], factores, tasaCambio, origen, orders = [], suppliers = [], usuarioActivoNombre, usuarioActivoPrefijo, puedoBorrar = true, onOpenConfig, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState('');
@@ -6704,7 +6732,7 @@ const EQUIPO_COMPRADORES = [
 ];
 
 // ---------- Gestión de usuarios (Config) ----------
-function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
+function UsuariosConfig({ usuarios = [], setUsuarios, usuarioActivo, onLogout }) {
   const [numero, setNumero] = useState('');
   const [nombre, setNombre] = useState('');
   const [prefijo, setPrefijo] = useState('');
@@ -7193,7 +7221,7 @@ function UsuariosConfig({ usuarios, setUsuarios, usuarioActivo, onLogout }) {
   );
 }
 
-function FabricasList({ fabricas, setFabricas }) {
+function FabricasList({ fabricas = [], setFabricas }) {
   const [newFab, setNewFab] = useState('');
   const add = () => {
     const f = newFab.trim();
@@ -7322,7 +7350,7 @@ function PanelAuditoria({ soyAdmin }) {
   );
 }
 
-function Administracion({ usuarios, setUsuarios, usuarioActivo, onLogout, factores, setFactores, tasaCambio, setTasaCambio, empresa, setEmpresa, embarcadores, setEmbarcadores }) {
+function Administracion({ usuarios = [], setUsuarios, usuarioActivo, onLogout, factores, setFactores, tasaCambio, setTasaCambio, empresa, setEmpresa, embarcadores = [], setEmbarcadores }) {
   const [errorLogo, setErrorLogo] = useState('');
   const [showEmbForm, setShowEmbForm] = useState(false);
   const [embForm, setEmbForm] = useState({ nombre: '', contacto: '', telefono: '', email: '', direccion: '' });
@@ -7571,7 +7599,7 @@ function Administracion({ usuarios, setUsuarios, usuarioActivo, onLogout, factor
 }
 
 // ---------- Marcas con sus proveedores (relación aparte, no toca el modelo de producto) ----------
-function MarcasConfig({ marcas, setMarcas, marcasProveedores, setMarcasProveedores, suppliers, origen }) {
+function MarcasConfig({ marcas = [], setMarcas, marcasProveedores, setMarcasProveedores, suppliers = [], origen }) {
   const [nueva, setNueva] = useState('');
   const [editandoMarca, setEditandoMarca] = useState(null);
   const [importPreview, setImportPreview] = useState(null);
@@ -7812,7 +7840,7 @@ function MarcasConfig({ marcas, setMarcas, marcasProveedores, setMarcasProveedor
   );
 }
 
-function Config({ departamentos, setDepartamentos, tipos, setTipos, marcas, setMarcas, marcasProveedores, setMarcasProveedores, suppliers, origen, ciudades, setCiudades, fabricas, setFabricas, onBack, onPresupuestos }) {
+function Config({ departamentos = [], setDepartamentos, tipos = [], setTipos, marcas = [], setMarcas, marcasProveedores, setMarcasProveedores, suppliers = [], origen, ciudades = [], setCiudades, fabricas = [], setFabricas, onBack, onPresupuestos }) {
   const [newDept, setNewDept] = useState('');
   const [newCiudad, setNewCiudad] = useState('');
   const [newTipoNombre, setNewTipoNombre] = useState('');
@@ -8175,7 +8203,7 @@ function Config({ departamentos, setDepartamentos, tipos, setTipos, marcas, setM
 }
 
 // ---------- Proveedores ----------
-function Proveedores({ suppliers, setSuppliers, origen, puedoBorrar = true }) {
+function Proveedores({ suppliers = [], setSuppliers, origen, puedoBorrar = true }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ nombre: '', contacto: '', email: '', telefono: '' });
   const [editingId, setEditingId] = useState(null);
