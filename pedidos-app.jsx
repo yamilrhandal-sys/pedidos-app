@@ -1915,6 +1915,14 @@ function PedidosAppInterno() {
               const next = orders.map((o) => (o.id === activeOrder.id ? { ...o, status } : o));
               persistOrders(next);
             }}
+            onConfirmarProveedor={(itemsConfirmados, entregaProveedor) => {
+              const next = orders.map((o) =>
+                o.id === activeOrder.id
+                  ? { ...o, items: itemsConfirmados, status: 'confirmado', entregaProveedor, confirmadoEn: new Date().toISOString() }
+                  : o
+              );
+              persistOrders(next);
+            }}
             hayBorradorPendiente={!!(borradorVisible?.items?.length > 0)}
             borradorAjenoBloquea={borradorAjenoBloquea}
             onDuplicar={() => {
@@ -2791,6 +2799,7 @@ function BottomNav({ view, setView, soyAdmin, soyPrivilegiado }) {
 // ---------- Pedidos list ----------
 const ESTADOS_PEDIDO = {
   pendiente: { bg: 'bg-app-goldbg', text: 'text-app-gold', label: 'Pendiente' },
+  confirmado: { bg: 'bg-app-blue', text: 'text-app-sky', label: 'Confirmado' },
   enviado: { bg: 'bg-app-blue', text: 'text-app-sky', label: 'Enviado' },
   recibido: { bg: 'bg-app-green', text: 'text-app-green', label: 'Recibido' },
 };
@@ -4018,10 +4027,268 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   );
 }
 
+// ---------- Confirmar pedido con archivo del proveedor (IA) ----------
+// Sube Excel/PDF del proveedor, Claude Haiku lo lee, empareja por código
+// contra el pedido, y muestra las diferencias para confirmar.
+function ConfirmarProveedor({ order, onCerrar, onConfirmar }) {
+  const [paso, setPaso] = useState('subir'); // subir | analizando | revisar | error
+  const [error, setError] = useState('');
+  const [lineasProv, setLineasProv] = useState([]);   // lo que leyó la IA del archivo
+  const [entrega, setEntrega] = useState('');
+  const [decisiones, setDecisiones] = useState({});   // codigo -> 'mio' | 'proveedor'
+
+  // Códigos que hay en el pedido (para emparejar)
+  const itemsPedido = order.items || [];
+  const pzsDe = (it) => sumVariantes(it.variantes);
+
+  const leerArchivo = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]); // base64 sin el prefijo
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    reader.readAsDataURL(file);
+  });
+
+  const analizar = async (file) => {
+    setPaso('analizando');
+    setError('');
+    try {
+      const base64 = await leerArchivo(file);
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      const esPDF = ext === 'pdf' || file.type === 'application/pdf';
+
+      // Contenido del mensaje: documento (PDF) o imagen. Para Excel avisamos que no se soporta directo.
+      let contenido;
+      if (esPDF) {
+        contenido = [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: promptExtraccion() },
+        ];
+      } else if (file.type.startsWith('image/')) {
+        contenido = [
+          { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
+          { type: 'text', text: promptExtraccion() },
+        ];
+      } else {
+        // Excel/CSV: leer como texto plano cuando sea CSV; Excel binario no se puede parsear en el navegador sin librería aquí.
+        setError('Por ahora sube PDF o una foto/imagen del documento. Para Excel, expórtalo a PDF o toma una captura.');
+        setPaso('subir');
+        return;
+      }
+
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 2000,
+          messages: [{ role: 'user', content: contenido }],
+        }),
+      });
+      const data = await resp.json();
+      const texto = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      const limpio = texto.replace(/```json|```/g, '').trim();
+      let parsed;
+      try { parsed = JSON.parse(limpio); } catch { throw new Error('La IA no devolvió datos legibles. Intenta con un archivo más claro.'); }
+
+      setLineasProv(Array.isArray(parsed.lineas) ? parsed.lineas : []);
+      if (parsed.entrega) setEntrega(parsed.entrega);
+      setPaso('revisar');
+    } catch (e) {
+      setError(e.message || 'Falló el análisis del archivo.');
+      setPaso('error');
+    }
+  };
+
+  const promptExtraccion = () => `Este es un documento de confirmación de un proveedor para un pedido de ropa.
+Extrae CADA línea de producto con: código de referencia, cantidad total y precio unitario.
+Si el documento indica una fecha de entrega general, inclúyela.
+Responde SOLO con JSON válido, sin texto adicional, con este formato exacto:
+{"entrega":"YYYY-MM-DD o texto tal cual","lineas":[{"codigo":"41R359-MC0","cantidad":120,"precio":15.00}]}
+Si no encuentras algún dato, usa null. No inventes datos que no estén en el documento.`;
+
+  // Emparejar líneas del proveedor con los items del pedido, por código
+  const comparacion = (() => {
+    const provPorCodigo = {};
+    lineasProv.forEach((l) => { if (l.codigo) provPorCodigo[String(l.codigo).trim().toUpperCase()] = l; });
+
+    const filas = itemsPedido.map((it) => {
+      const cod = (codigoConDestino(it) || it.codigo || '').trim().toUpperCase();
+      const codBase = (it.codigo || '').trim().toUpperCase();
+      const prov = provPorCodigo[cod] || provPorCodigo[codBase] || null;
+      const miCant = pzsDe(it);
+      const miPrecio = parseFloat(it.costoMonto) || 0;
+      const provCant = prov ? Number(prov.cantidad) : null;
+      const provPrecio = prov ? Number(prov.precio) : null;
+      const difCant = prov && provCant != null && provCant !== miCant;
+      const difPrecio = prov && provPrecio != null && Math.abs(provPrecio - miPrecio) > 0.001;
+      return { it, cod: codigoConDestino(it) || it.codigo, miCant, miPrecio, provCant, provPrecio, difCant, difPrecio, encontrado: !!prov };
+    });
+
+    // Códigos del proveedor que NO están en el pedido (extras)
+    const codigosPedido = new Set(itemsPedido.flatMap((it) => [
+      (codigoConDestino(it) || '').trim().toUpperCase(),
+      (it.codigo || '').trim().toUpperCase(),
+    ]));
+    const extras = lineasProv.filter((l) => l.codigo && !codigosPedido.has(String(l.codigo).trim().toUpperCase()));
+
+    return { filas, extras };
+  })();
+
+  const hayDiferencias = comparacion.filas.some((f) => f.difCant || f.difPrecio || !f.encontrado) || comparacion.extras.length > 0;
+
+  // Construir los items finales aplicando las decisiones (aceptar proveedor donde corresponda)
+  const construirConfirmados = (aceptarProveedor) => {
+    return itemsPedido.map((it) => {
+      const cod = codigoConDestino(it) || it.codigo;
+      const fila = comparacion.filas.find((f) => f.cod === cod);
+      if (!fila || !fila.encontrado) return it;
+      const usarProv = aceptarProveedor ? true : decisiones[cod] === 'proveedor';
+      if (!usarProv) return it;
+      // Aplicar precio del proveedor
+      let nuevo = { ...it };
+      if (fila.provPrecio != null) nuevo.costoMonto = fila.provPrecio;
+      // Aplicar cantidad del proveedor: se ajusta proporcionalmente la única variante si es "sin talla",
+      // o se marca la diferencia. Para simplicidad y precisión, si hay 1 variante, se ajusta esa.
+      if (fila.provCant != null && (nuevo.variantes || []).length === 1) {
+        nuevo.variantes = [{ ...nuevo.variantes[0], cantidad: fila.provCant }];
+      }
+      return nuevo;
+    });
+  };
+
+  const confirmarTodo = (aceptarProveedor) => {
+    const items = construirConfirmados(aceptarProveedor);
+    onConfirmar(items, entrega || null);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-app-bg"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-app-line">
+        <p className="text-sm font-semibold">Confirmar con proveedor</p>
+        <button onClick={onCerrar} className="p-2 text-app-dim2" aria-label="Cerrar"><X size={18} /></button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        {paso === 'subir' && (
+          <div className="space-y-3">
+            <p className="text-sm text-app-dim2">
+              Sube el PDF o foto del documento que te envió el proveedor confirmando el pedido.
+              La IA lo leerá y comparará contra tu pedido <span className="text-app-gold">{order.numero}</span>.
+            </p>
+            <label className="block w-full rounded-xl border border-dashed border-app-line3 py-8 text-center cursor-pointer hover:border-app-gold">
+              <Upload size={22} className="mx-auto mb-2 text-app-dim3" />
+              <span className="text-sm text-app-dim2 block">Tocar para elegir archivo</span>
+              <span className="text-xs text-app-dim3">PDF o imagen</span>
+              <input type="file" accept="application/pdf,image/*" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) analizar(f); }} />
+            </label>
+            {error && <p className="text-xs text-app-gold">{error}</p>}
+          </div>
+        )}
+
+        {paso === 'analizando' && (
+          <div className="text-center py-16">
+            <div className="text-app-gold text-sm tracking-widest uppercase animate-pulse">Leyendo el documento…</div>
+            <p className="text-xs text-app-dim3 mt-2">La IA está extrayendo los datos</p>
+          </div>
+        )}
+
+        {paso === 'error' && (
+          <div className="text-center py-10 space-y-3">
+            <p className="text-3xl">⚠️</p>
+            <p className="text-sm text-app-red2">{error}</p>
+            <button onClick={() => setPaso('subir')} className="text-sm text-app-sky underline">Intentar con otro archivo</button>
+          </div>
+        )}
+
+        {paso === 'revisar' && (
+          <div className="space-y-3">
+            {!hayDiferencias ? (
+              <div className="bg-app-panel border border-green-500/30 rounded-xl p-3 text-center">
+                <p className="text-sm text-green-400 font-medium">✓ Todo coincide</p>
+                <p className="text-xs text-app-dim2 mt-1">El proveedor confirmó exactamente lo que pediste.</p>
+              </div>
+            ) : (
+              <p className="text-xs text-app-dim2">Revisa las diferencias marcadas en amarillo:</p>
+            )}
+
+            {entrega && (
+              <div className="bg-app-panel border border-app-line rounded-xl p-3">
+                <span className="text-xs text-app-dim2">Fecha de entrega del proveedor: </span>
+                <span className="text-sm text-app-white">{entrega}</span>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {comparacion.filas.map((f, i) => (
+                <div key={i} className={`border rounded-xl p-3 ${(f.difCant || f.difPrecio || !f.encontrado) ? 'border-app-gold/40 bg-app-goldbg' : 'border-app-line bg-app-panel'}`}>
+                  <p className="text-xs font-mono text-app-gold mb-1">{f.cod}</p>
+                  {!f.encontrado ? (
+                    <p className="text-xs text-app-red2">⚠ El proveedor no confirmó este artículo</p>
+                  ) : (
+                    <div className="space-y-0.5 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-app-dim2">Cantidad</span>
+                        <span className={f.difCant ? 'text-app-gold font-semibold' : 'text-app-light'}>
+                          {f.miCant}{f.difCant ? ` → ${f.provCant}` : ' ✓'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-app-dim2">Precio ({f.it.costoMoneda})</span>
+                        <span className={f.difPrecio ? 'text-app-gold font-semibold' : 'text-app-light'}>
+                          {f.miPrecio}{f.difPrecio ? ` → ${f.provPrecio}` : ' ✓'}
+                        </span>
+                      </div>
+                      {(f.difCant || f.difPrecio) && (
+                        <div className="flex gap-1.5 mt-2">
+                          <button onClick={() => setDecisiones((d) => ({ ...d, [f.cod]: 'mio' }))}
+                            className={`flex-1 text-xs rounded-lg py-1.5 border ${decisiones[f.cod] !== 'proveedor' ? 'bg-app-active border-app-gold text-app-white' : 'border-app-line text-app-dim2'}`}>
+                            Mantener el mío
+                          </button>
+                          <button onClick={() => setDecisiones((d) => ({ ...d, [f.cod]: 'proveedor' }))}
+                            className={`flex-1 text-xs rounded-lg py-1.5 border ${decisiones[f.cod] === 'proveedor' ? 'bg-app-active border-app-gold text-app-white' : 'border-app-line text-app-dim2'}`}>
+                            Usar del proveedor
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {comparacion.extras.length > 0 && (
+                <div className="border border-app-line rounded-xl p-3 bg-app-panel">
+                  <p className="text-xs text-app-dim2 mb-1">El proveedor incluyó códigos que no están en tu pedido:</p>
+                  {comparacion.extras.map((e, i) => (
+                    <p key={i} className="text-xs font-mono text-app-dim3">{e.codigo} · {e.cantidad} pzs · {e.precio}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {paso === 'revisar' && (
+        <div className="px-4 py-3 border-t border-app-line flex gap-2">
+          <button onClick={() => confirmarTodo(true)} className="flex-1 py-3 rounded-lg border border-app-line text-sm">
+            Aceptar todo del proveedor
+          </button>
+          <button onClick={() => confirmarTodo(false)} className="flex-1 py-3 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">
+            Confirmar con mis decisiones
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Detalle pedido ----------
-function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, setTasaCambio, onDuplicar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
+function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarProveedor, tasaCambio, setTasaCambio, onDuplicar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [confirmDuplicar, setConfirmDuplicar] = useState(false);
+  const [mostrarConfirmar, setMostrarConfirmar] = useState(false);
   const [pdfHtml, setPdfHtml] = useState(null);   // documento a mostrar
   const [pdfModo, setPdfModo] = useState('proveedor');
   const pdfRef = useRef(null);
@@ -4466,6 +4733,23 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
         </div>
       </div>
 
+      {onConfirmarProveedor && (
+        <div>
+          <button
+            onClick={() => setMostrarConfirmar(true)}
+            className="w-full py-3 rounded-xl border border-app-sky/40 bg-app-blue text-app-sky text-sm font-medium flex items-center justify-center gap-2 active:opacity-80"
+          >
+            <Upload size={16} /> Confirmar con archivo del proveedor
+          </button>
+          {order.status === 'confirmado' && order.confirmadoEn && (
+            <p className="text-xs text-app-dim3 mt-1 text-center">
+              ✓ Confirmado {new Date(order.confirmadoEn).toLocaleDateString('es-HN')}
+              {order.entregaProveedor ? ` · entrega ${order.entregaProveedor}` : ''}
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="flex gap-3 pt-1">
         <button onClick={exportExcel} className="flex-1 py-3 rounded-xl border border-app-line text-sm font-medium flex items-center justify-center gap-2 active:bg-app-panel">
           <FileDown size={16} /> Excel
@@ -4482,6 +4766,17 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, tasaCambio, se
       </button>
 
       {/* Vista previa del documento — se muestra dentro de la app */}
+      {mostrarConfirmar && onConfirmarProveedor && (
+        <ConfirmarProveedor
+          order={order}
+          onCerrar={() => setMostrarConfirmar(false)}
+          onConfirmar={(items, entrega) => {
+            onConfirmarProveedor(items, entrega);
+            setMostrarConfirmar(false);
+          }}
+        />
+      )}
+
       {pdfHtml && (
         <div
           className="fixed inset-0 z-50 flex flex-col"
