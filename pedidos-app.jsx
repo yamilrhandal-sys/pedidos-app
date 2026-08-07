@@ -2354,6 +2354,7 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const porComprador = acum((o) => o.creadoPor || 'Sin comprador');
   const porMarca = acum((o, it) => it.marca || 'Sin marca');
   const porDepto = acum((o, it) => it.departamento || 'Sin depto');
+  const porTipo = acum((o, it) => it.tipo || 'Sin tipo');
   const porPais = acum((o) => (ORIGENES.find((x) => x.id === o.origen)?.label) || o.origen || 'Sin país');
 
   // Compras por mes (últimos 12)
@@ -2377,20 +2378,6 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const estados = { pendiente: 0, enviado: 0, recibido: 0 };
   pedidos.forEach((o) => { estados[o.status || 'pendiente'] = (estados[o.status || 'pendiente'] || 0) + 1; });
 
-  // ---- Alertas ----
-  const hoy = new Date();
-  const pedidosAtrasados = orders.filter((o) => {
-    if ((o.status || 'pendiente') === 'recibido' || !o.fecha) return false;
-    const dias = (hoy - new Date(o.fecha)) / 86400000;
-    return dias > 90;
-  });
-  const proveedoresSinActividad = suppliers.filter((s) => {
-    const ult = orders.filter((o) => o.supplierId === s.id).map((o) => new Date(o.fecha)).filter((d) => !isNaN(d)).sort((a, b) => b - a)[0];
-    if (!ult) return true;
-    return (hoy - ult) / 86400000 > 90;
-  });
-  const sinConfirmar = orders.filter((o) => (o.status || 'pendiente') === 'pendiente').length;
-
   // ---- Exportar Excel ----
   const exportarExcel = () => {
     const rows = [];
@@ -2405,6 +2392,9 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
     rows.push({});
     rows.push({ Métrica: 'TOP MARCAS', Valor: '' });
     porMarca.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs }));
+    rows.push({});
+    rows.push({ Métrica: 'TOP TIPOS DE PRODUCTO', Valor: '' });
+    porTipo.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs }));
     rows.push({});
     rows.push({ Métrica: 'POR COMPRADOR', Valor: '' });
     porComprador.forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs, Órdenes: r.ordenes }));
@@ -2628,23 +2618,8 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
           <Seccion titulo="Top 10 departamentos">
             <RankingTabla datos={porDepto} />
           </Seccion>
-
-          {/* Alertas */}
-          <Seccion titulo="⚠️ Alertas">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-app-light">Pedidos atrasados (+90 días sin recibir)</span>
-                <span className={`font-bold ${pedidosAtrasados.length > 0 ? 'text-red-400' : 'text-app-dim3'}`}>{pedidosAtrasados.length}</span>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-app-light">Proveedores sin actividad (+90 días)</span>
-                <span className={`font-bold ${proveedoresSinActividad.length > 0 ? 'text-app-gold' : 'text-app-dim3'}`}>{proveedoresSinActividad.length}</span>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-app-light">Pedidos sin confirmar (pendientes)</span>
-                <span className={`font-bold ${sinConfirmar > 0 ? 'text-app-gold' : 'text-app-dim3'}`}>{sinConfirmar}</span>
-              </div>
-            </div>
+          <Seccion titulo="Top 10 tipos de producto">
+            <RankingTabla datos={porTipo} />
           </Seccion>
         </>
       )}
