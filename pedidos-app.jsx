@@ -2252,6 +2252,7 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
   const [deptosAbiertos, setDeptosAbiertos] = useState(new Set());
+  const [rankingsAbiertos, setRankingsAbiertos] = useState(new Set());
 
   // ---- Filtro de fechas ----
   const enRango = (lista) => {
@@ -2536,20 +2537,36 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
     </div>
   );
 
-  const RankingTabla = ({ datos, mostrarOrdenes }) => (
-    <div className="space-y-1">
-      {datos.slice(0, 10).map((r, i) => (
-        <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-app-line last:border-0">
-          <span className="text-app-dim3 w-4 shrink-0">{i + 1}</span>
-          <span className="text-app-light truncate flex-1">{r.nombre}</span>
-          <span className="text-app-gold shrink-0">{fmtUSD(r.usd)}</span>
-          <span className="text-app-dim3 shrink-0 w-14 text-right">{r.pzs.toLocaleString()} pzs</span>
-          {mostrarOrdenes && <span className="text-app-dim3 shrink-0 w-10 text-right">{r.ordenes} ord</span>}
-        </div>
-      ))}
-      {datos.length === 0 && <p className="text-xs text-app-dim3">Sin datos</p>}
-    </div>
-  );
+  const RankingTabla = ({ datos, mostrarOrdenes, id }) => {
+    const abierto = rankingsAbiertos.has(id);
+    const visibles = abierto ? datos : datos.slice(0, 10);
+    return (
+      <div className="space-y-1">
+        {visibles.map((r, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-app-line last:border-0">
+            <span className="text-app-dim3 w-4 shrink-0">{i + 1}</span>
+            <span className="text-app-light truncate flex-1">{r.nombre}</span>
+            <span className="text-app-gold shrink-0">{fmtUSD(r.usd)}</span>
+            <span className="text-app-dim3 shrink-0 w-14 text-right">{r.pzs.toLocaleString()} pzs</span>
+            {mostrarOrdenes && <span className="text-app-dim3 shrink-0 w-10 text-right">{r.ordenes} ord</span>}
+          </div>
+        ))}
+        {datos.length === 0 && <p className="text-xs text-app-dim3">Sin datos</p>}
+        {datos.length > 10 && (
+          <button
+            onClick={() => setRankingsAbiertos((prev) => {
+              const n = new Set(prev);
+              n.has(id) ? n.delete(id) : n.add(id);
+              return n;
+            })}
+            className="w-full text-xs text-app-sky pt-1.5"
+          >
+            {abierto ? 'Ver menos' : `Ver todos (${datos.length})`}
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-3">
@@ -2635,15 +2652,15 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
           </div>
 
           {/* Rankings */}
-          <Seccion titulo="Top 10 proveedores">
-            <RankingTabla datos={porProveedor} mostrarOrdenes />
+          <Seccion titulo="Proveedores">
+            <RankingTabla datos={porProveedor} mostrarOrdenes id="prov" />
           </Seccion>
-          <Seccion titulo="Top 10 marcas">
-            <RankingTabla datos={porMarca} />
+          <Seccion titulo="Marcas">
+            <RankingTabla datos={porMarca} id="marca" />
           </Seccion>
-          <Seccion titulo="Compras por departamento y tipo">
+          <Seccion titulo="Departamento y tipo">
             <div className="space-y-1">
-              {deptoConTipos.slice(0, 15).map((d, i) => {
+              {(rankingsAbiertos.has('depto') ? deptoConTipos : deptoConTipos.slice(0, 10)).map((d, i) => {
                 const abierto = deptosAbiertos.has(d.nombre);
                 return (
                   <div key={i} className="border-b border-app-line last:border-0">
@@ -2675,6 +2692,18 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
                 );
               })}
               {deptoConTipos.length === 0 && <p className="text-xs text-app-dim3">Sin datos</p>}
+              {deptoConTipos.length > 10 && (
+                <button
+                  onClick={() => setRankingsAbiertos((prev) => {
+                    const n = new Set(prev);
+                    n.has('depto') ? n.delete('depto') : n.add('depto');
+                    return n;
+                  })}
+                  className="w-full text-xs text-app-sky pt-1.5"
+                >
+                  {rankingsAbiertos.has('depto') ? 'Ver menos' : `Ver todos (${deptoConTipos.length})`}
+                </button>
+              )}
             </div>
           </Seccion>
         </>
