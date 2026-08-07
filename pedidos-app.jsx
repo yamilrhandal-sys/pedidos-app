@@ -2251,6 +2251,7 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const [rangoFecha, setRangoFecha] = useState('all'); // all | 30d | 90d | 12m | custom
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
+  const [deptosAbiertos, setDeptosAbiertos] = useState(new Set());
 
   // ---- Filtro de fechas ----
   const enRango = (lista) => {
@@ -2355,6 +2356,28 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const porMarca = acum((o, it) => it.marca || 'Sin marca');
   const porDepto = acum((o, it) => it.departamento || 'Sin depto');
   const porTipo = acum((o, it) => it.tipo || 'Sin tipo');
+
+  // Departamento → tipos anidados (para desglose expandible)
+  const deptoConTipos = (() => {
+    const m = {};
+    pedidos.forEach((o) => {
+      (o.items || []).forEach((it) => {
+        const depto = it.departamento || 'Sin depto';
+        const tipo = it.tipo || 'Sin tipo';
+        m[depto] = m[depto] || { usd: 0, pzs: 0, tipos: {} };
+        const u = usdItem(it), pz = sumVariantes(it.variantes);
+        m[depto].usd += u; m[depto].pzs += pz;
+        m[depto].tipos[tipo] = m[depto].tipos[tipo] || { usd: 0, pzs: 0 };
+        m[depto].tipos[tipo].usd += u; m[depto].tipos[tipo].pzs += pz;
+      });
+    });
+    return Object.entries(m)
+      .map(([nombre, d]) => ({
+        nombre, usd: d.usd, pzs: d.pzs,
+        tipos: Object.entries(d.tipos).map(([n, t]) => ({ nombre: n, usd: t.usd, pzs: t.pzs })).sort((a, b) => b.usd - a.usd),
+      }))
+      .sort((a, b) => b.usd - a.usd);
+  })();
   const porPais = acum((o) => (ORIGENES.find((x) => x.id === o.origen)?.label) || o.origen || 'Sin país');
 
   // Compras por mes (últimos 12)
@@ -2393,8 +2416,11 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
     rows.push({ Métrica: 'TOP MARCAS', Valor: '' });
     porMarca.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs }));
     rows.push({});
-    rows.push({ Métrica: 'TOP TIPOS DE PRODUCTO', Valor: '' });
-    porTipo.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs }));
+    rows.push({ Métrica: 'POR DEPARTAMENTO Y TIPO', Valor: '' });
+    deptoConTipos.forEach((d) => {
+      rows.push({ Métrica: d.nombre, Valor: Math.round(d.usd), Piezas: d.pzs });
+      d.tipos.forEach((t) => rows.push({ Métrica: '   • ' + t.nombre, Valor: Math.round(t.usd), Piezas: t.pzs }));
+    });
     rows.push({});
     rows.push({ Métrica: 'POR COMPRADOR', Valor: '' });
     porComprador.forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs, Órdenes: r.ordenes }));
@@ -2615,11 +2641,41 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
           <Seccion titulo="Top 10 marcas">
             <RankingTabla datos={porMarca} />
           </Seccion>
-          <Seccion titulo="Top 10 departamentos">
-            <RankingTabla datos={porDepto} />
-          </Seccion>
-          <Seccion titulo="Top 10 tipos de producto">
-            <RankingTabla datos={porTipo} />
+          <Seccion titulo="Compras por departamento y tipo">
+            <div className="space-y-1">
+              {deptoConTipos.slice(0, 15).map((d, i) => {
+                const abierto = deptosAbiertos.has(d.nombre);
+                return (
+                  <div key={i} className="border-b border-app-line last:border-0">
+                    <button
+                      onClick={() => setDeptosAbiertos((prev) => {
+                        const n = new Set(prev);
+                        n.has(d.nombre) ? n.delete(d.nombre) : n.add(d.nombre);
+                        return n;
+                      })}
+                      className="w-full flex items-center gap-2 text-xs py-1.5 active:opacity-70"
+                    >
+                      <ChevronDown size={12} className={`text-app-dim shrink-0 transition-transform ${abierto ? '' : '-rotate-90'}`} />
+                      <span className="text-app-light truncate flex-1 text-left">{d.nombre}</span>
+                      <span className="text-app-gold shrink-0">{fmtUSD(d.usd)}</span>
+                      <span className="text-app-dim3 shrink-0 w-14 text-right">{d.pzs.toLocaleString()} pzs</span>
+                    </button>
+                    {abierto && (
+                      <div className="pb-1.5">
+                        {d.tipos.map((t, j) => (
+                          <div key={j} className="flex items-center gap-2 text-xs py-1 pl-6">
+                            <span className="text-app-dim2 truncate flex-1">• {t.nombre}</span>
+                            <span className="text-app-dim2 shrink-0">{fmtUSD(t.usd)}</span>
+                            <span className="text-app-dim3 shrink-0 w-14 text-right">{t.pzs.toLocaleString()} pzs</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {deptoConTipos.length === 0 && <p className="text-xs text-app-dim3">Sin datos</p>}
+            </div>
           </Seccion>
         </>
       )}
