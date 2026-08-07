@@ -5363,6 +5363,7 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
   const [openFieldId, setOpenFieldId] = useState(null);
   const [descEditada, setDescEditada] = useState(false);
   const [sinTalla, setSinTalla] = useState(false);
+  const [tallasOverride, setTallasOverride] = useState(null); // grupo de tallas elegido para ESTE producto (null = usa las del tipo)
   const [matrix, setMatrix] = useState({});       // cantidades del pedido (solo en pedidoMode)
   const [qtySinTalla, setQtySinTalla] = useState({}); // cantidades sin talla por color
   const [destinoPedido, setDestinoPedido] = useState('H'); // destino del pedido (solo pedidoMode)
@@ -5394,7 +5395,9 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
 
   const tipoSeleccionado = tipos.find((t) => t.nombre === form.tipo);
   const esCinturaLargo = tipoSeleccionado?.medida === 'cintura_largo';
-  const tallasDisponibles = getTallasDeTipo(tipoSeleccionado);
+  const tallasDisponibles = tallasOverride && tallasOverride.length > 0
+    ? tallasOverride
+    : getTallasDeTipo(tipoSeleccionado);
 
   const updateField = (changes) => {
     setForm((prev) => {
@@ -5767,7 +5770,7 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
           openId={openFieldId}
           setOpenId={setOpenFieldId}
           value={form.tipo}
-          onChange={(v) => updateField({ tipo: v, subtipo: '' })}
+          onChange={(v) => { updateField({ tipo: v, subtipo: '' }); setTallasOverride(null); setMatrix({}); }}
           options={tipos.map((t) => t.nombre)}
           placeholder="Buscar tipo… (define las tallas)"
           recentKey="tipo"
@@ -5886,6 +5889,23 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
               Sin talla
             </button>
           </div>
+          {!sinTalla && !esCinturaLargo && (
+            <div className="mb-2">
+              <p className="text-xs text-app-dim3 mb-1">Grupo de tallas para este producto:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {GRUPOS_TALLAS.filter((g) => !['Cintura pantalón', 'Largo pantalón'].includes(g.label)).map((g) => {
+                  const activo = JSON.stringify(tallasDisponibles) === JSON.stringify(g.tallas);
+                  return (
+                    <button key={g.label} type="button"
+                      onClick={() => { setTallasOverride(g.tallas); setMatrix({}); }}
+                      className={`text-xs rounded-lg px-2.5 py-1 border ${activo ? 'bg-app-gold text-app-bg border-app-gold font-semibold' : 'bg-app-panel border-app-line text-app-dim2'}`}>
+                      {g.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {sinTalla ? (
             pedidoMode && (form.colores || []).length > 0 ? (
               <div className="space-y-2">
