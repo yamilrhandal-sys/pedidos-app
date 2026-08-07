@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Plus, Trash2, FileDown, Package, Truck, ClipboardList, X, ChevronRight,
-  ChevronDown, ChevronLeft, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, BarChart3, Copy,
+  ChevronDown, ChevronLeft, Search, Camera, ImageOff, AlertCircle, Settings, Layers, Tag, Pencil, Globe, Upload, Wallet, BarChart3, Copy, FileText,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { createClient } from '@supabase/supabase-js';
@@ -165,6 +165,7 @@ const KEYS = {
   presupuestos: 'pedidos:presupuestos',
   usuarios: 'pedidos:usuarios',
   borradores: 'pedidos:borradores',
+  ordenesCompra: 'pedidos:ordenesCompra', // [{ numero, fecha, supplierId, lineas, totalFob, moneda, estado }]
 };
 const SESION_KEY = 'pedidos:sesion'; // storage PERSONAL: recuerda el usuario de este dispositivo
 const ULTIMO_USUARIO_KEY = 'pedidos:ultimo'; // storage PERSONAL: último usuario que entró (sobrevive a logout)
@@ -1345,6 +1346,7 @@ function PedidosAppInterno() {
   const [products, setProducts] = useLista([]);
   const [suppliers, setSuppliers] = useLista([]);
   const [orders, setOrders] = useLista([]);
+  const [ordenesCompra, setOrdenesCompra] = useLista([]);
   const [departamentos, setDepartamentos] = useLista([]);
   const [tipos, setTipos] = useLista([]);
   const [marcas, setMarcas] = useLista([]);
@@ -1382,7 +1384,7 @@ function PedidosAppInterno() {
     // Si aún no hay sesión, esperamos: este efecto se repite cuando llega.
     if (SUPABASE_CONFIGURADO && !sesionAuth) return;
     (async () => {
-      const [p, s, o, d, t, mc, emp, embs, mcp, tc, ci, fa, pr, us, fac, bo, sesion, modoGuardado, ultimoUsuario] = await Promise.all([
+      const [p, s, o, d, t, mc, emp, embs, mcp, tc, ci, fa, pr, us, fac, bo, oc, sesion, modoGuardado, ultimoUsuario] = await Promise.all([
         loadShared(KEYS.products, seedProducts()),
         loadShared(KEYS.suppliers, seedSuppliers()),
         loadShared(KEYS.orders, []),
@@ -1399,6 +1401,7 @@ function PedidosAppInterno() {
         loadShared(KEYS.usuarios, []),
         loadShared(KEYS.factores, { china: 32, usa: 22, panama: 18, honduras: 1 }),
         loadShared(KEYS.borradores, {}),
+        loadShared(KEYS.ordenesCompra, []),
         loadPersonal(SESION_KEY, null),
         loadPersonal(MODO_KEY, 'auto'),
         loadPersonal(ULTIMO_USUARIO_KEY, null),
@@ -1409,6 +1412,7 @@ function PedidosAppInterno() {
       setProducts(arr(p));
       setSuppliers(arr(s));
       setOrders(arr(o));
+      setOrdenesCompra(arr(oc));
       setDepartamentos(arr(d));
       setTipos(arr(t));
       setMarcas(arr(mc));
@@ -1520,6 +1524,13 @@ function PedidosAppInterno() {
       return next;
     });
     guardarConCola(KEYS.orders, next);
+  }, [guardarConCola, actorAuditoria]);
+  const persistOrdenesCompra = useCallback((next) => {
+    setOrdenesCompra((prev) => {
+      registrarAuditoria('ordenes_compra', prev, next, actorAuditoria(), (oc) => `OC ${oc.numero}`);
+      return next;
+    });
+    guardarConCola(KEYS.ordenesCompra, next);
   }, [guardarConCola, actorAuditoria]);
   const persistTasaCambio = useCallback((next) => { setTasaCambio(next); guardarConCola(KEYS.tasaCambio, next); }, [guardarConCola]);
   const persistDepartamentos = useCallback((next) => { setDepartamentos(next); guardarConCola(KEYS.departamentos, next); }, [guardarConCola]);
@@ -2032,6 +2043,17 @@ function PedidosAppInterno() {
           />
         )}
 
+        {view === 'oc' && (
+          <ModuloOC
+            ordenesCompra={ordenesCompra}
+            setOrdenesCompra={persistOrdenesCompra}
+            orders={orders}
+            suppliers={suppliers}
+            products={products}
+            empresa={empresa}
+          />
+        )}
+
         {view === 'reportes' && soyPrivilegiado && (
           <Reportes
             orders={orders}
@@ -2163,7 +2185,7 @@ function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleMod
   const titles = {
     pedidos: 'Pedidos', nuevo: 'Nuevo pedido', productos: 'Catálogo',
     proveedores: 'Proveedores', detalle: 'Detalle de pedido', config: 'Departamentos y tipos',
-    presupuestos: 'Presupuesto', reportes: 'Reportes', administracion: 'Administración',
+    presupuestos: 'Presupuesto', oc: 'Órdenes de Compra', reportes: 'Reportes', administracion: 'Administración',
   };
   // El botón de modo solo tiene sentido si la pantalla es ancha (≥1024 px).
   // Si el usuario está en modo móvil forzado en pantalla ancha, se lo mostramos para que pueda volver a auto.
@@ -2255,6 +2277,513 @@ function Header({ view, setView, origen, onCambiarOrigen, modoVista, onToggleMod
 }
 
 // ---------- Reportes: jerarquía Origen → Comprador → Proveedor → Marca → Depto → Tipo ----------
+// ============================================================
+// MÓDULO OC — Órdenes de Compra
+// Sube la proforma del proveedor (varios pedidos mezclados),
+// la IA lee los códigos y precios FOB, el sistema busca cada
+// código en TODOS los pedidos y arma la OC agrupada por pedido.
+// ============================================================
+function ModuloOC({ ordenesCompra = [], setOrdenesCompra, orders = [], suppliers = [], products = [], empresa }) {
+  const [vista, setVista] = useState('lista'); // lista | nueva | detalle
+  const [ocActiva, setOcActiva] = useState(null);
+
+  const abrirDetalle = (oc) => { setOcActiva(oc); setVista('detalle'); };
+
+  if (vista === 'nueva') {
+    return (
+      <NuevaOC
+        orders={orders}
+        suppliers={suppliers}
+        products={products}
+        ordenesCompra={ordenesCompra}
+        onCancelar={() => setVista('lista')}
+        onGuardar={(oc) => {
+          setOrdenesCompra([oc, ...ordenesCompra]);
+          setOcActiva(oc);
+          setVista('detalle');
+        }}
+      />
+    );
+  }
+
+  if (vista === 'detalle' && ocActiva) {
+    return (
+      <DetalleOC
+        oc={ocActiva}
+        suppliers={suppliers}
+        empresa={empresa}
+        onBack={() => setVista('lista')}
+        onEliminar={() => {
+          setOrdenesCompra(ordenesCompra.filter((x) => x.numero !== ocActiva.numero));
+          setVista('lista');
+        }}
+      />
+    );
+  }
+
+  // Lista de OC
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Órdenes de Compra</h2>
+        <button onClick={() => setVista('nueva')} className="bg-app-gold text-app-bg rounded-full px-4 py-2 text-sm font-semibold flex items-center gap-1.5 active:scale-95 transition">
+          <Plus size={16} /> Nueva OC
+        </button>
+      </div>
+
+      {ordenesCompra.length === 0 ? (
+        <div className="text-center py-12 text-app-dim2">
+          <FileText size={28} className="mx-auto mb-2 text-app-dim3" />
+          <p className="text-sm">Aún no hay órdenes de compra.</p>
+          <p className="text-xs text-app-dim3 mt-1">Sube la proforma de un proveedor para crear la primera.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {ordenesCompra.map((oc) => {
+            const prov = suppliers.find((s) => s.id === oc.supplierId);
+            return (
+              <button key={oc.numero} onClick={() => abrirDetalle(oc)}
+                className="w-full bg-app-panel border border-app-line rounded-xl p-3 text-left active:bg-app-active">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-app-gold text-sm">{oc.numero}</span>
+                  <span className="text-xs text-app-dim3">{oc.fecha}</span>
+                </div>
+                <p className="text-sm text-app-white mt-0.5">{prov?.nombre || oc.proveedorNombre || 'Proveedor'}</p>
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-xs text-app-dim2">{(oc.lineas || []).length} líneas · {(oc.pedidosOrigen || []).length} pedidos</span>
+                  <span className="text-sm font-semibold text-app-white">{fmtMoneda(oc.totalFob, oc.moneda || 'USD')}</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Nueva OC: subir proforma y armar ----------
+function NuevaOC({ orders = [], suppliers = [], products = [], ordenesCompra = [], onCancelar, onGuardar }) {
+  const [paso, setPaso] = useState('subir'); // subir | analizando | revisar | error
+  const [error, setError] = useState('');
+  const [lineasProv, setLineasProv] = useState([]);
+  const [totalFobIA, setTotalFobIA] = useState(null);
+  const [monedaIA, setMonedaIA] = useState('USD');
+  const [proveedorNombreIA, setProveedorNombreIA] = useState('');
+
+  const leerArchivo = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    reader.readAsDataURL(file);
+  });
+
+  const promptExtraccion = () => `Este es una PROFORMA de un proveedor de ropa. Puede incluir productos de varios pedidos.
+Extrae CADA línea con: código de referencia, cantidad, precio unitario FOB.
+También extrae: nombre del proveedor, moneda (USD o RMB), y el TOTAL FOB si aparece.
+Responde SOLO con JSON válido, sin texto adicional:
+{"proveedor":"nombre","moneda":"USD","totalFob":12345.67,"lineas":[{"codigo":"41R359-MC0","cantidad":120,"precio":15.00}]}
+Si no encuentras un dato, usa null. No inventes nada.`;
+
+  const analizar = async (file) => {
+    setPaso('analizando'); setError('');
+    try {
+      const base64 = await leerArchivo(file);
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      const esPDF = ext === 'pdf' || file.type === 'application/pdf';
+      let contenido;
+      if (esPDF) {
+        contenido = [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+          { type: 'text', text: promptExtraccion() },
+        ];
+      } else if (file.type.startsWith('image/')) {
+        contenido = [
+          { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
+          { type: 'text', text: promptExtraccion() },
+        ];
+      } else {
+        setError('Sube PDF o una foto/imagen de la proforma. Para Excel, expórtalo a PDF.');
+        setPaso('subir'); return;
+      }
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 3000, messages: [{ role: 'user', content: contenido }] }),
+      });
+      const data = await resp.json();
+      const texto = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      const limpio = texto.replace(/```json|```/g, '').trim();
+      let parsed;
+      try { parsed = JSON.parse(limpio); } catch { throw new Error('La IA no devolvió datos legibles. Intenta con un archivo más claro.'); }
+      setLineasProv(Array.isArray(parsed.lineas) ? parsed.lineas : []);
+      setTotalFobIA(parsed.totalFob != null ? Number(parsed.totalFob) : null);
+      setMonedaIA(parsed.moneda === 'RMB' ? 'RMB' : 'USD');
+      setProveedorNombreIA(parsed.proveedor || '');
+      setPaso('revisar');
+    } catch (e) {
+      setError(e.message || 'Falló el análisis.'); setPaso('error');
+    }
+  };
+
+  // Emparejar cada línea de la proforma con el pedido donde aparece ese código
+  const buscarPedido = (codigo) => {
+    const cod = String(codigo || '').trim().toUpperCase();
+    for (const o of orders) {
+      for (const it of (o.items || [])) {
+        const c1 = (codigoConDestino(it) || '').trim().toUpperCase();
+        const c2 = (it.codigo || '').trim().toUpperCase();
+        if (c1 === cod || c2 === cod) return { order: o, item: it };
+      }
+    }
+    return null;
+  };
+
+  const armado = (() => {
+    const porPedido = {}; // numero -> { order, lineas: [] }
+    const sinPedido = [];
+    let total = 0;
+    lineasProv.forEach((l) => {
+      const cant = Number(l.cantidad) || 0;
+      const precio = Number(l.precio) || 0;
+      const sub = cant * precio;
+      total += sub;
+      const match = buscarPedido(l.codigo);
+      const fila = { codigo: l.codigo, cantidad: cant, precio, subtotal: sub, descripcion: match?.item?.descripcion || '' };
+      if (match) {
+        const num = match.order.numero || match.order.id;
+        porPedido[num] = porPedido[num] || { order: match.order, lineas: [] };
+        porPedido[num].lineas.push(fila);
+      } else {
+        sinPedido.push(fila);
+      }
+    });
+    return { porPedido, sinPedido, total };
+  })();
+
+  const totalCalculado = armado.total;
+  const totalFinal = totalFobIA != null ? totalFobIA : totalCalculado;
+
+  // Detectar proveedor: por nombre de la IA, o por el proveedor de los pedidos encontrados
+  const supplierDetectado = (() => {
+    if (proveedorNombreIA) {
+      const m = suppliers.find((s) => (s.nombre || '').toLowerCase().includes(proveedorNombreIA.toLowerCase()) ||
+        proveedorNombreIA.toLowerCase().includes((s.nombre || '').toLowerCase()));
+      if (m) return m;
+    }
+    // Del primer pedido emparejado
+    const primerPedido = Object.values(armado.porPedido)[0]?.order;
+    if (primerPedido?.supplierId) return suppliers.find((s) => s.id === primerPedido.supplierId);
+    return null;
+  })();
+
+  const generarNumero = () => {
+    const anio = String(new Date().getFullYear()).slice(-2);
+    const prefijo = `OC-${anio}-`;
+    let max = 0;
+    ordenesCompra.forEach((oc) => {
+      if ((oc.numero || '').startsWith(prefijo)) {
+        const n = parseInt(oc.numero.slice(prefijo.length), 10);
+        if (!isNaN(n) && n > max) max = n;
+      }
+    });
+    return `${prefijo}${String(max + 1).padStart(4, '0')}`;
+  };
+
+  const guardar = () => {
+    const lineas = [];
+    Object.values(armado.porPedido).forEach(({ order, lineas: ls }) => {
+      ls.forEach((l) => lineas.push({ ...l, pedidoNumero: order.numero || order.id }));
+    });
+    armado.sinPedido.forEach((l) => lineas.push({ ...l, pedidoNumero: null }));
+    const oc = {
+      numero: generarNumero(),
+      fecha: new Date().toISOString().slice(0, 10),
+      supplierId: supplierDetectado?.id || null,
+      proveedorNombre: supplierDetectado?.nombre || proveedorNombreIA || '',
+      moneda: monedaIA,
+      totalFob: totalFinal,
+      lineas,
+      pedidosOrigen: Object.keys(armado.porPedido),
+      creadoEn: new Date().toISOString(),
+    };
+    onGuardar(oc);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <button onClick={onCancelar} className="text-sm text-app-dim2 flex items-center gap-1">
+          <ChevronLeft size={16} /> Volver
+        </button>
+        <h2 className="text-base font-semibold">Nueva OC</h2>
+        <span className="w-12" />
+      </div>
+
+      {paso === 'subir' && (
+        <div className="space-y-3">
+          <p className="text-sm text-app-dim2">
+            Sube la proforma del proveedor (PDF o foto). La IA leerá los códigos y precios FOB,
+            y buscará en todos tus pedidos de qué pedido es cada producto.
+          </p>
+          <label className="block w-full rounded-xl border border-dashed border-app-line3 py-8 text-center cursor-pointer hover:border-app-gold">
+            <Upload size={22} className="mx-auto mb-2 text-app-dim3" />
+            <span className="text-sm text-app-dim2 block">Tocar para elegir archivo</span>
+            <span className="text-xs text-app-dim3">PDF o imagen</span>
+            <input type="file" accept="application/pdf,image/*" className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) analizar(f); }} />
+          </label>
+          {error && <p className="text-xs text-app-gold">{error}</p>}
+        </div>
+      )}
+
+      {paso === 'analizando' && (
+        <div className="text-center py-16">
+          <div className="text-app-gold text-sm tracking-widest uppercase animate-pulse">Leyendo la proforma…</div>
+          <p className="text-xs text-app-dim3 mt-2">Extrayendo códigos y buscando en tus pedidos</p>
+        </div>
+      )}
+
+      {paso === 'error' && (
+        <div className="text-center py-10 space-y-3">
+          <p className="text-3xl">⚠️</p>
+          <p className="text-sm text-app-red2">{error}</p>
+          <button onClick={() => setPaso('subir')} className="text-sm text-app-sky underline">Intentar con otro archivo</button>
+        </div>
+      )}
+
+      {paso === 'revisar' && (
+        <div className="space-y-3">
+          <div className="bg-app-panel border border-app-line rounded-xl p-3">
+            <div className="flex justify-between text-xs">
+              <span className="text-app-dim2">Proveedor detectado</span>
+              <span className="text-app-white">{supplierDetectado?.nombre || proveedorNombreIA || 'No identificado'}</span>
+            </div>
+            <div className="flex justify-between text-xs mt-1">
+              <span className="text-app-dim2">Líneas leídas</span>
+              <span className="text-app-white">{lineasProv.length}</span>
+            </div>
+          </div>
+
+          {Object.values(armado.porPedido).map(({ order, lineas }, i) => {
+            const subtotal = lineas.reduce((s, l) => s + l.subtotal, 0);
+            return (
+              <div key={i} className="bg-app-panel border border-app-line rounded-xl overflow-hidden">
+                <div className="bg-app-bg px-3 py-2 flex justify-between items-center">
+                  <span className="text-xs font-semibold text-app-gold">Pedido {order.numero || order.id}</span>
+                  <span className="text-xs text-app-dim2">{fmtMoneda(subtotal, monedaIA)}</span>
+                </div>
+                <div className="p-3 space-y-1">
+                  {lineas.map((l, j) => (
+                    <div key={j} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono text-app-light truncate flex-1">{l.codigo}</span>
+                      <span className="text-app-dim2 shrink-0">{l.cantidad} × {l.precio}</span>
+                      <span className="text-app-white shrink-0 w-16 text-right">{fmtMoneda(l.subtotal, monedaIA)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          {armado.sinPedido.length > 0 && (
+            <div className="bg-app-panel border border-app-gold/40 rounded-xl overflow-hidden">
+              <div className="bg-app-goldbg px-3 py-2">
+                <span className="text-xs font-semibold text-app-gold">⚠ No encontrados en ningún pedido</span>
+              </div>
+              <div className="p-3 space-y-1">
+                {armado.sinPedido.map((l, j) => (
+                  <div key={j} className="flex items-center gap-2 text-xs">
+                    <span className="font-mono text-app-light truncate flex-1">{l.codigo}</span>
+                    <span className="text-app-dim2 shrink-0">{l.cantidad} × {l.precio}</span>
+                    <span className="text-app-white shrink-0 w-16 text-right">{fmtMoneda(l.subtotal, monedaIA)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-app-panel border border-app-line rounded-xl p-3">
+            <div className="flex justify-between items-center">
+              <span className="text-sm font-semibold text-app-white">TOTAL FOB</span>
+              <span className="text-lg font-bold text-app-gold">{fmtMoneda(totalFinal, monedaIA)}</span>
+            </div>
+            {totalFobIA != null && Math.abs(totalFobIA - totalCalculado) > 1 && (
+              <p className="text-xs text-app-dim3 mt-1">
+                Nota: el total de la proforma ({fmtMoneda(totalFobIA, monedaIA)}) difiere de la suma de líneas ({fmtMoneda(totalCalculado, monedaIA)}).
+              </p>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={() => setPaso('subir')} className="flex-1 py-3 rounded-lg border border-app-line text-sm">
+              Volver a subir
+            </button>
+            <button onClick={guardar} className="flex-1 py-3 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">
+              Crear OC
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Detalle OC: ver y generar PDF ----------
+function DetalleOC({ oc, suppliers = [], empresa, onBack, onEliminar }) {
+  const [pdfHtml, setPdfHtml] = useState(null);
+  const prov = suppliers.find((s) => s.id === oc.supplierId);
+
+  // Agrupar líneas por pedido de origen
+  const grupos = (() => {
+    const m = {};
+    (oc.lineas || []).forEach((l) => {
+      const k = l.pedidoNumero || 'Sin pedido';
+      m[k] = m[k] || [];
+      m[k].push(l);
+    });
+    return m;
+  })();
+
+  const generarPDF = () => {
+    const esc = (t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const filasHtml = Object.entries(grupos).map(([pedido, lineas]) => {
+      const sub = lineas.reduce((s, l) => s + l.subtotal, 0);
+      const filas = lineas.map((l) => `
+        <tr>
+          <td class="cod">${esc(l.codigo)}</td>
+          <td>${esc(l.descripcion || '')}</td>
+          <td class="num">${l.cantidad}</td>
+          <td class="num">${fmtMoneda(l.precio, oc.moneda)}</td>
+          <td class="num">${fmtMoneda(l.subtotal, oc.moneda)}</td>
+        </tr>`).join('');
+      return `
+        <tr class="grupo"><td colspan="5">Pedido ${esc(pedido)}</td></tr>
+        ${filas}
+        <tr class="subt"><td colspan="4">Subtotal pedido ${esc(pedido)}</td><td class="num">${fmtMoneda(sub, oc.moneda)}</td></tr>`;
+    }).join('');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      * { margin:0; padding:0; box-sizing:border-box; }
+      body { font-family: -apple-system, Arial, sans-serif; color:#1a1a1a; padding:28px; font-size:12px; }
+      .head { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #1a1a1a; padding-bottom:12px; margin-bottom:14px; }
+      .logo { max-height:52px; }
+      h1 { font-size:20px; margin-bottom:2px; }
+      .tipo { font-size:11px; letter-spacing:2px; color:#888; text-transform:uppercase; }
+      .meta { text-align:right; font-size:11px; color:#555; line-height:1.7; }
+      .meta strong { color:#1a1a1a; font-size:14px; }
+      .info { display:flex; gap:30px; font-size:11px; color:#555; margin-bottom:14px; line-height:1.7; }
+      table { width:100%; border-collapse:collapse; margin-top:6px; }
+      th { text-align:left; font-size:10px; text-transform:uppercase; color:#888; border-bottom:1px solid #ddd; padding:6px 6px; }
+      td { padding:5px 6px; border-bottom:1px solid #f0f0f0; }
+      .num { text-align:right; }
+      .cod { font-family:monospace; font-weight:600; }
+      tr.grupo td { background:#f3f3f3; font-weight:700; font-size:11px; padding:6px; }
+      tr.subt td { font-size:11px; color:#555; border-bottom:1px solid #ddd; }
+      .total { margin-top:16px; border-top:2px solid #1a1a1a; padding-top:10px; display:flex; justify-content:flex-end; gap:18px; align-items:baseline; }
+      .total .lbl { font-size:13px; font-weight:600; }
+      .total .val { font-size:18px; font-weight:700; }
+      .firma { margin-top:40px; display:flex; justify-content:space-between; }
+      .firma div { width:44%; border-top:1px solid #999; text-align:center; padding-top:5px; font-size:11px; color:#555; }
+    </style></head><body>
+      <div class="head">
+        <div>
+          ${empresa?.logo ? `<img src="${empresa.logo}" class="logo" />` : '<h1>CARRION</h1>'}
+          <div class="tipo">Orden de Compra</div>
+        </div>
+        <div class="meta">
+          <strong>${esc(oc.numero)}</strong><br>
+          Fecha: ${esc(oc.fecha)}
+        </div>
+      </div>
+      <div class="info">
+        <div><strong>Proveedor:</strong> ${esc(prov?.nombre || oc.proveedorNombre || '')}</div>
+        <div><strong>Moneda:</strong> ${esc(oc.moneda)}</div>
+      </div>
+      <table>
+        <thead><tr><th>Código</th><th>Descripción</th><th class="num">Cant.</th><th class="num">FOB unit.</th><th class="num">Subtotal</th></tr></thead>
+        <tbody>${filasHtml}</tbody>
+      </table>
+      <div class="total">
+        <span class="lbl">TOTAL FOB</span>
+        <span class="val">${fmtMoneda(oc.totalFob, oc.moneda)}</span>
+      </div>
+      <div class="firma"><div>Autorizado por CARRION</div><div>Aceptado por Proveedor</div></div>
+    </body></html>`;
+    setPdfHtml(html);
+  };
+
+  const imprimir = () => {
+    const marco = document.getElementById('oc-print-frame');
+    if (!marco || !marco.contentWindow) return;
+    marco.contentWindow.focus();
+    marco.contentWindow.print();
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <button onClick={onBack} className="text-sm text-app-dim2 flex items-center gap-1">
+          <ChevronLeft size={16} /> Volver
+        </button>
+        <BotonBorrar onConfirm={onEliminar} size={16} texto="Eliminar OC" />
+      </div>
+
+      <div className="bg-app-panel border border-app-line rounded-xl p-3">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-app-gold">{oc.numero}</span>
+          <span className="text-xs text-app-dim3">{oc.fecha}</span>
+        </div>
+        <p className="text-sm text-app-white mt-1">{prov?.nombre || oc.proveedorNombre}</p>
+        <p className="text-xs text-app-dim2">{(oc.lineas || []).length} líneas · {Object.keys(grupos).length} pedidos</p>
+      </div>
+
+      {Object.entries(grupos).map(([pedido, lineas], i) => {
+        const sub = lineas.reduce((s, l) => s + l.subtotal, 0);
+        return (
+          <div key={i} className="bg-app-panel border border-app-line rounded-xl overflow-hidden">
+            <div className="bg-app-bg px-3 py-2 flex justify-between">
+              <span className="text-xs font-semibold text-app-gold">Pedido {pedido}</span>
+              <span className="text-xs text-app-dim2">{fmtMoneda(sub, oc.moneda)}</span>
+            </div>
+            <div className="p-3 space-y-1">
+              {lineas.map((l, j) => (
+                <div key={j} className="flex items-center gap-2 text-xs">
+                  <span className="font-mono text-app-light truncate flex-1">{l.codigo}</span>
+                  <span className="text-app-dim2 shrink-0">{l.cantidad} × {l.precio}</span>
+                  <span className="text-app-white shrink-0 w-16 text-right">{fmtMoneda(l.subtotal, oc.moneda)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="bg-app-panel border border-app-line rounded-xl p-3 flex justify-between items-center">
+        <span className="text-sm font-semibold text-app-white">TOTAL FOB</span>
+        <span className="text-lg font-bold text-app-gold">{fmtMoneda(oc.totalFob, oc.moneda)}</span>
+      </div>
+
+      <button onClick={generarPDF} className="w-full py-3 rounded-xl bg-app-gold text-app-bg text-sm font-semibold flex items-center justify-center gap-2">
+        <FileDown size={16} /> Generar PDF de la OC
+      </button>
+
+      {pdfHtml && (
+        <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: 'rgba(0,0,0,0.85)', paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+          <div className="flex items-center justify-between gap-2 px-4 py-3 bg-app-panel border-b border-app-line">
+            <p className="text-sm font-semibold truncate">OC {oc.numero}</p>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={imprimir} className="px-4 py-2 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">Imprimir / Guardar PDF</button>
+              <button onClick={() => setPdfHtml(null)} className="p-2 rounded-lg border border-app-line text-app-dim2"><X size={16} /></button>
+            </div>
+          </div>
+          <iframe id="oc-print-frame" srcDoc={pdfHtml} className="flex-1 w-full bg-white" title="OC" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const [rangoFecha, setRangoFecha] = useState('all'); // all | 30d | 90d | 12m | custom
   const [fechaDesde, setFechaDesde] = useState('');
@@ -2727,6 +3256,7 @@ function SideNav({ view, setView, soyAdmin, soyPrivilegiado }) {
     { key: 'productos', label: 'Catálogo', icon: Package },
     { key: 'proveedores', label: 'Proveedores', icon: Truck },
     { key: 'presupuestos', label: 'Presupuesto', icon: Wallet },
+    { key: 'oc', label: 'Órdenes Compra', icon: FileText },
     ...(soyPrivilegiado ? [{ key: 'reportes', label: 'Reportes', icon: BarChart3 }] : []),
     ...(soyAdmin ? [{ key: 'administracion', label: 'Administración', icon: Settings }] : []),
   ];
@@ -2765,6 +3295,7 @@ function BottomNav({ view, setView, soyAdmin, soyPrivilegiado }) {
     { key: 'productos', label: 'Catálogo', icon: Package },
     { key: 'proveedores', label: 'Proveed.', icon: Truck },
     { key: 'presupuestos', label: 'Presup.', icon: Wallet },
+    { key: 'oc', label: 'OC', icon: FileText },
     ...(soyPrivilegiado ? [{ key: 'reportes', label: 'Reportes', icon: BarChart3 }] : []),
     ...(soyAdmin ? [{ key: 'administracion', label: 'Admin', icon: Settings }] : []),
   ];
