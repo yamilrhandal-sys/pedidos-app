@@ -2251,273 +2251,402 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const [rangoFecha, setRangoFecha] = useState('all'); // all | 30d | 90d | 12m | custom
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
-  const [expandidos, setExpandidos] = useState(new Set()); // paths tipo "china|Yamil|Proveedor"
 
-  const toggle = (path) => {
-    setExpandidos((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
-    });
-  };
-  const isExp = (path) => expandidos.has(path);
-
-  // Filtrar pedidos por rango de fechas
-  const pedidosFiltrados = (() => {
-    if (rangoFecha === 'all') return orders;
+  // ---- Filtro de fechas ----
+  const enRango = (lista) => {
+    if (rangoFecha === 'all') return lista;
     const ahora = new Date();
-    let desde;
-    if (rangoFecha === '30d') { desde = new Date(ahora); desde.setDate(desde.getDate() - 30); }
-    else if (rangoFecha === '90d') { desde = new Date(ahora); desde.setDate(desde.getDate() - 90); }
-    else if (rangoFecha === '12m') { desde = new Date(ahora); desde.setMonth(desde.getMonth() - 12); }
-    else if (rangoFecha === 'custom') {
+    if (rangoFecha === 'custom') {
       const d = fechaDesde ? new Date(fechaDesde) : null;
       const h = fechaHasta ? new Date(fechaHasta) : null;
-      return orders.filter((o) => {
-        if (!o.fecha) return true;              // pedidos sin fecha: no se descartan
+      return lista.filter((o) => {
+        if (!o.fecha) return true;
         const f = new Date(o.fecha);
-        if (isNaN(f)) return true;              // fecha ilegible: tampoco se descarta
+        if (isNaN(f)) return true;
         if (d && f < d) return false;
         if (h && f > h) return false;
         return true;
       });
     }
-    return orders.filter((o) => {
+    let desde = new Date(ahora);
+    if (rangoFecha === '30d') desde.setDate(desde.getDate() - 30);
+    else if (rangoFecha === '90d') desde.setDate(desde.getDate() - 90);
+    else if (rangoFecha === '12m') desde.setMonth(desde.getMonth() - 12);
+    return lista.filter((o) => {
       if (!o.fecha) return true;
       const f = new Date(o.fecha);
       return isNaN(f) ? true : f >= desde;
     });
+  };
+
+  const pedidos = enRango(orders);
+  // Período anterior del mismo tamaño (para comparativos), solo si no es "all"
+  const pedidosPrev = (() => {
+    if (rangoFecha === 'all') return [];
+    const ahora = new Date();
+    let dias = rangoFecha === '30d' ? 30 : rangoFecha === '90d' ? 90 : rangoFecha === '12m' ? 365 : 30;
+    if (rangoFecha === 'custom' && fechaDesde && fechaHasta) {
+      dias = Math.max(1, Math.round((new Date(fechaHasta) - new Date(fechaDesde)) / 86400000));
+    }
+    const finPrev = new Date(ahora); finPrev.setDate(finPrev.getDate() - dias);
+    const iniPrev = new Date(finPrev); iniPrev.setDate(iniPrev.getDate() - dias);
+    return orders.filter((o) => {
+      if (!o.fecha) return false;
+      const f = new Date(o.fecha);
+      return !isNaN(f) && f >= iniPrev && f < finPrev;
+    });
   })();
 
-  // Calcular totales de un item en Lempiras (costo bodega) y USD
-  const totalesItem = (it) => {
-    const bodega = costoBodegaHNL(it.costoMonto, it.costoMoneda, it.origen, factores, tasaCambio?.rmbUsd, factores?.nikiPct);
-    const pzs = sumVariantes(it.variantes);
-    let usd = it.costoMonto || 0;
+  // ---- USD por item ----
+  const usdItem = (it) => {
+    let usd = parseFloat(it.costoMonto) || 0;
     if (it.costoMoneda === 'RMB') usd = usd / (parseFloat(tasaCambio?.rmbUsd) || 7.25);
-    return { pzs, hnl: bodega * pzs, usd: usd * pzs };
+    return usd * sumVariantes(it.variantes);
   };
+  const usdPedido = (o) => (o.items || []).reduce((s, it) => s + usdItem(it), 0);
+  const pzsPedido = (o) => (o.items || []).reduce((s, it) => s + sumVariantes(it.variantes), 0);
 
-  // Construir jerarquía anidada
-  const arbol = {}; // { origen: { comprador: { proveedor: { marca: { depto: { tipo: {pzs, hnl, usd} } } } } } }
-  pedidosFiltrados.forEach((o) => {
-    const origenId = o.origen || 'china';
-    const comprador = o.creadoPor || 'Sin comprador';
-    const supplier = suppliers.find((s) => s.id === o.supplierId);
-    const nombreProveedor = supplier?.nombre || 'Proveedor eliminado';
-    (o.items || []).forEach((it) => {
-      const marca = it.marca || 'Sin marca';
-      const depto = it.departamento || 'Sin departamento';
-      const tipo = it.tipo || 'Sin tipo';
-      const { pzs, hnl, usd } = totalesItem(it);
-      arbol[origenId] = arbol[origenId] || {};
-      arbol[origenId][comprador] = arbol[origenId][comprador] || {};
-      arbol[origenId][comprador][nombreProveedor] = arbol[origenId][comprador][nombreProveedor] || {};
-      arbol[origenId][comprador][nombreProveedor][marca] = arbol[origenId][comprador][nombreProveedor][marca] || {};
-      arbol[origenId][comprador][nombreProveedor][marca][depto] = arbol[origenId][comprador][nombreProveedor][marca][depto] || {};
-      const bucket = arbol[origenId][comprador][nombreProveedor][marca][depto];
-      bucket[tipo] = bucket[tipo] || { pzs: 0, hnl: 0, usd: 0 };
-      bucket[tipo].pzs += pzs;
-      bucket[tipo].hnl += hnl;
-      bucket[tipo].usd += usd;
+  // ---- Métricas del período ----
+  const metricas = (lista) => {
+    let comprado = 0, piezas = 0;
+    const proveedores = new Set(), paises = new Set(), marcas = new Set();
+    lista.forEach((o) => {
+      comprado += usdPedido(o);
+      piezas += pzsPedido(o);
+      if (o.supplierId) proveedores.add(o.supplierId);
+      if (o.origen) paises.add(o.origen);
+      (o.items || []).forEach((it) => { if (it.marca) marcas.add(it.marca); });
     });
-  });
-
-  // Sumar totales de un nivel dado (recursivo)
-  const sumarNivel = (obj) => {
-    let pzs = 0, hnl = 0, usd = 0;
-    const walk = (n) => {
-      if (n?.pzs !== undefined && n?.hnl !== undefined) {
-        pzs += n.pzs; hnl += n.hnl; usd += n.usd; return;
-      }
-      Object.values(n || {}).forEach(walk);
+    const ordenes = lista.length;
+    return {
+      comprado, piezas, ordenes,
+      costoProm: piezas > 0 ? comprado / piezas : 0,
+      proveedores: proveedores.size, paises: paises.size, marcas: marcas.size,
     };
-    walk(obj);
-    return { pzs, hnl, usd };
+  };
+  const M = metricas(pedidos);
+  const Mprev = metricas(pedidosPrev);
+
+  const variacion = (act, prev) => {
+    if (!prev || prev === 0) return null;
+    return ((act - prev) / prev) * 100;
   };
 
-  const origenesConDatos = Object.keys(arbol);
-
-  const exportarExcel = () => {
-    const rows = [];
-    Object.entries(arbol).forEach(([origenId, porComprador]) => {
-      Object.entries(porComprador).forEach(([comprador, porProveedor]) => {
-        Object.entries(porProveedor).forEach(([proveedor, porMarca]) => {
-          Object.entries(porMarca).forEach(([marca, porDepto]) => {
-            Object.entries(porDepto).forEach(([depto, porTipo]) => {
-              Object.entries(porTipo).forEach(([tipo, tot]) => {
-                rows.push({
-                  Origen: origenId,
-                  Comprador: comprador,
-                  Proveedor: proveedor,
-                  Marca: marca,
-                  Departamento: depto,
-                  Tipo: tipo,
-                  Piezas: tot.pzs,
-                  'Total USD': parseFloat((tot.usd || 0).toFixed(2)),
-                });
-              });
-            });
-          });
-        });
+  // ---- Agrupaciones para rankings y gráficas ----
+  const acum = (keyFn) => {
+    const m = {};
+    pedidos.forEach((o) => {
+      (o.items || []).forEach((it) => {
+        const k = keyFn(o, it);
+        if (!k) return;
+        m[k] = m[k] || { usd: 0, pzs: 0, ordenes: new Set() };
+        m[k].usd += usdItem(it);
+        m[k].pzs += sumVariantes(it.variantes);
+        m[k].ordenes.add(o.id);
       });
     });
-    if (rows.length === 0) rows.push({ Origen: 'Sin datos' });
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [{ wch: 10 }, { wch: 16 }, { wch: 22 }, { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 10 }, { wch: 14 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Reporte');
-    descargarLibro(wb, `reporte_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    return Object.entries(m)
+      .map(([k, v]) => ({ nombre: k, usd: v.usd, pzs: v.pzs, ordenes: v.ordenes.size }))
+      .sort((a, b) => b.usd - a.usd);
   };
 
-  const Total = ({ pzs, usd }) => (
-    <span className="text-xs text-app-dim2 whitespace-nowrap ml-2">
-      {pzs} pzs · <span className="text-app-gold">{fmtMoneda(usd, 'USD')}</span>
-    </span>
+  const porProveedor = acum((o) => (suppliers.find((s) => s.id === o.supplierId)?.nombre) || 'Sin proveedor');
+  const porComprador = acum((o) => o.creadoPor || 'Sin comprador');
+  const porMarca = acum((o, it) => it.marca || 'Sin marca');
+  const porDepto = acum((o, it) => it.departamento || 'Sin depto');
+  const porPais = acum((o) => (ORIGENES.find((x) => x.id === o.origen)?.label) || o.origen || 'Sin país');
+
+  // Compras por mes (últimos 12)
+  const porMes = (() => {
+    const m = {};
+    pedidos.forEach((o) => {
+      if (!o.fecha) return;
+      const f = new Date(o.fecha);
+      if (isNaN(f)) return;
+      const k = `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}`;
+      m[k] = (m[k] || 0) + usdPedido(o);
+    });
+    return Object.entries(m).sort().slice(-12).map(([k, v]) => {
+      const [a, mm] = k.split('-');
+      const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+      return { label: meses[parseInt(mm) - 1], valor: v };
+    });
+  })();
+
+  // Estados de pedido
+  const estados = { pendiente: 0, enviado: 0, recibido: 0 };
+  pedidos.forEach((o) => { estados[o.status || 'pendiente'] = (estados[o.status || 'pendiente'] || 0) + 1; });
+
+  // ---- Alertas ----
+  const hoy = new Date();
+  const pedidosAtrasados = orders.filter((o) => {
+    if ((o.status || 'pendiente') === 'recibido' || !o.fecha) return false;
+    const dias = (hoy - new Date(o.fecha)) / 86400000;
+    return dias > 90;
+  });
+  const proveedoresSinActividad = suppliers.filter((s) => {
+    const ult = orders.filter((o) => o.supplierId === s.id).map((o) => new Date(o.fecha)).filter((d) => !isNaN(d)).sort((a, b) => b - a)[0];
+    if (!ult) return true;
+    return (hoy - ult) / 86400000 > 90;
+  });
+  const sinConfirmar = orders.filter((o) => (o.status || 'pendiente') === 'pendiente').length;
+
+  // ---- Exportar Excel ----
+  const exportarExcel = () => {
+    const rows = [];
+    rows.push({ Métrica: 'Total comprado (USD)', Valor: Math.round(M.comprado) });
+    rows.push({ Métrica: 'Órdenes', Valor: M.ordenes });
+    rows.push({ Métrica: 'Piezas', Valor: M.piezas });
+    rows.push({ Métrica: 'Costo promedio (USD)', Valor: parseFloat(M.costoProm.toFixed(2)) });
+    rows.push({ Métrica: 'Proveedores activos', Valor: M.proveedores });
+    rows.push({});
+    rows.push({ Métrica: 'TOP PROVEEDORES', Valor: '' });
+    porProveedor.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs, Órdenes: r.ordenes }));
+    rows.push({});
+    rows.push({ Métrica: 'TOP MARCAS', Valor: '' });
+    porMarca.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs }));
+    rows.push({});
+    rows.push({ Métrica: 'POR COMPRADOR', Valor: '' });
+    porComprador.forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs, Órdenes: r.ordenes }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 28 }, { wch: 16 }, { wch: 10 }, { wch: 10 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Dashboard');
+    descargarLibro(wb, `dashboard_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  // ================= Sub-componentes visuales =================
+  const fmtUSD = (v) => '$' + Math.round(v).toLocaleString('en-US');
+
+  const Tarjeta = ({ titulo, valor, sub, variacionPct, invertir }) => {
+    const pos = variacionPct != null && (invertir ? variacionPct < 0 : variacionPct > 0);
+    const neg = variacionPct != null && (invertir ? variacionPct > 0 : variacionPct < 0);
+    return (
+      <div className="bg-app-panel border border-app-line rounded-xl p-3">
+        <p className="text-xs text-app-dim2">{titulo}</p>
+        <p className="text-lg font-bold text-app-white mt-0.5 leading-tight">{valor}</p>
+        {variacionPct != null ? (
+          <p className={`text-xs mt-0.5 ${pos ? 'text-green-400' : neg ? 'text-red-400' : 'text-app-dim3'}`}>
+            {variacionPct > 0 ? '▲' : variacionPct < 0 ? '▼' : ''} {Math.abs(variacionPct).toFixed(1)}% vs período anterior
+          </p>
+        ) : sub ? <p className="text-xs text-app-dim3 mt-0.5">{sub}</p> : null}
+      </div>
+    );
+  };
+
+  const BarrasHoriz = ({ datos, max = 5, color = '#5b9bd5' }) => {
+    const top = datos.slice(0, max);
+    const maxVal = Math.max(1, ...top.map((d) => d.usd));
+    return (
+      <div className="space-y-1.5">
+        {top.map((d, i) => (
+          <div key={i}>
+            <div className="flex justify-between text-xs mb-0.5">
+              <span className="text-app-light truncate pr-2">{d.nombre}</span>
+              <span className="text-app-dim2 shrink-0">{fmtUSD(d.usd)}</span>
+            </div>
+            <div className="h-2 bg-app-bg rounded-full overflow-hidden">
+              <div className="h-full rounded-full" style={{ width: `${(d.usd / maxVal) * 100}%`, backgroundColor: color }} />
+            </div>
+          </div>
+        ))}
+        {top.length === 0 && <p className="text-xs text-app-dim3">Sin datos</p>}
+      </div>
+    );
+  };
+
+  const LineaMeses = ({ datos }) => {
+    if (datos.length === 0) return <p className="text-xs text-app-dim3">Sin datos por mes</p>;
+    const w = 300, h = 110, pad = 8;
+    const maxV = Math.max(1, ...datos.map((d) => d.valor));
+    const step = datos.length > 1 ? (w - pad * 2) / (datos.length - 1) : 0;
+    const pts = datos.map((d, i) => {
+      const x = pad + i * step;
+      const y = h - pad - (d.valor / maxV) * (h - pad * 2 - 12);
+      return { x, y, ...d };
+    });
+    const linea = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 130 }}>
+        <polyline points={pts.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#5b9bd5" strokeWidth="2" />
+        {pts.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="2.5" fill="#5b9bd5" />)}
+        {pts.map((p, i) => (
+          <text key={`t${i}`} x={p.x} y={h - 1} fontSize="7" fill="#888" textAnchor="middle">{p.label}</text>
+        ))}
+      </svg>
+    );
+  };
+
+  const Dona = ({ datos, max = 5 }) => {
+    const top = datos.slice(0, max);
+    const total = top.reduce((s, d) => s + d.usd, 0) || 1;
+    const colores = ['#5b9bd5', '#70ad47', '#ffc000', '#ed7d31', '#a5a5a5', '#7030a0'];
+    let ang = -90;
+    const R = 42, r = 26, cx = 50, cy = 50;
+    const arcos = top.map((d, i) => {
+      const frac = d.usd / total;
+      const a0 = ang, a1 = ang + frac * 360;
+      ang = a1;
+      const rad = (a) => (a * Math.PI) / 180;
+      const x0 = cx + R * Math.cos(rad(a0)), y0 = cy + R * Math.sin(rad(a0));
+      const x1 = cx + R * Math.cos(rad(a1)), y1 = cy + R * Math.sin(rad(a1));
+      const xi1 = cx + r * Math.cos(rad(a1)), yi1 = cy + r * Math.sin(rad(a1));
+      const xi0 = cx + r * Math.cos(rad(a0)), yi0 = cy + r * Math.sin(rad(a0));
+      const large = frac > 0.5 ? 1 : 0;
+      return { path: `M${x0},${y0} A${R},${R} 0 ${large} 1 ${x1},${y1} L${xi1},${yi1} A${r},${r} 0 ${large} 0 ${xi0},${yi0} Z`, color: colores[i % colores.length], pct: frac * 100, nombre: d.nombre };
+    });
+    return (
+      <div className="flex items-center gap-3">
+        <svg viewBox="0 0 100 100" style={{ width: 90, height: 90 }} className="shrink-0">
+          {arcos.map((a, i) => <path key={i} d={a.path} fill={a.color} />)}
+        </svg>
+        <div className="space-y-1 min-w-0">
+          {arcos.map((a, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-xs">
+              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: a.color }} />
+              <span className="text-app-light truncate">{a.nombre}</span>
+              <span className="text-app-dim2 shrink-0">{a.pct.toFixed(0)}%</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const Seccion = ({ titulo, children }) => (
+    <div className="bg-app-panel border border-app-line rounded-xl p-3">
+      <h3 className="text-xs uppercase tracking-wide text-app-dim2 mb-2.5">{titulo}</h3>
+      {children}
+    </div>
+  );
+
+  const RankingTabla = ({ datos, mostrarOrdenes }) => (
+    <div className="space-y-1">
+      {datos.slice(0, 10).map((r, i) => (
+        <div key={i} className="flex items-center gap-2 text-xs py-1 border-b border-app-line last:border-0">
+          <span className="text-app-dim3 w-4 shrink-0">{i + 1}</span>
+          <span className="text-app-light truncate flex-1">{r.nombre}</span>
+          <span className="text-app-gold shrink-0">{fmtUSD(r.usd)}</span>
+          <span className="text-app-dim3 shrink-0 w-14 text-right">{r.pzs.toLocaleString()} pzs</span>
+          {mostrarOrdenes && <span className="text-app-dim3 shrink-0 w-10 text-right">{r.ordenes} ord</span>}
+        </div>
+      ))}
+      {datos.length === 0 && <p className="text-xs text-app-dim3">Sin datos</p>}
+    </div>
   );
 
   return (
     <div className="space-y-3">
-      <h2 className="text-lg font-semibold">📊 Reportes</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">📊 Dashboard</h2>
+        <button onClick={exportarExcel} className="text-xs text-app-sky flex items-center gap-1">
+          <FileDown size={13} /> Excel
+        </button>
+      </div>
 
       {/* Filtro de fechas */}
       <div className="bg-app-panel border border-app-line rounded-xl p-3 space-y-2">
-        <label className="text-xs uppercase tracking-wide text-app-dim2">Rango de fechas</label>
         <div className="flex flex-wrap gap-1.5">
           {[
             { id: 'all', label: 'Todo' },
-            { id: '30d', label: 'Último mes' },
-            { id: '90d', label: 'Último trimestre' },
-            { id: '12m', label: 'Último año' },
+            { id: '30d', label: 'Mes' },
+            { id: '90d', label: 'Trimestre' },
+            { id: '12m', label: 'Año' },
             { id: 'custom', label: 'Personalizado' },
           ].map((r) => (
-            <button
-              key={r.id}
-              onClick={() => setRangoFecha(r.id)}
-              className={`text-xs rounded-lg border px-2.5 py-1.5 ${rangoFecha === r.id ? 'bg-app-gold text-app-bg border-app-gold font-semibold' : 'bg-app-bg border-app-line text-app-light'}`}
-            >
+            <button key={r.id} onClick={() => setRangoFecha(r.id)}
+              className={`text-xs rounded-lg border px-2.5 py-1.5 ${rangoFecha === r.id ? 'bg-app-gold text-app-bg border-app-gold font-semibold' : 'bg-app-bg border-app-line text-app-light'}`}>
               {r.label}
             </button>
           ))}
         </div>
         {rangoFecha === 'custom' && (
-          <div className="flex gap-2 mt-1">
-            <input type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)}
-              className="flex-1 bg-app-bg border border-app-line rounded-lg px-2 py-1.5 text-xs" />
-            <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)}
-              className="flex-1 bg-app-bg border border-app-line rounded-lg px-2 py-1.5 text-xs" />
+          <div className="flex gap-2">
+            <input type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} className="flex-1 bg-app-bg border border-app-line rounded-lg px-2 py-1.5 text-xs" />
+            <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} className="flex-1 bg-app-bg border border-app-line rounded-lg px-2 py-1.5 text-xs" />
           </div>
         )}
-        <button onClick={exportarExcel}
-          className="w-full mt-1 py-2 rounded-lg bg-app-panel border border-app-line text-app-sky text-xs font-medium flex items-center justify-center gap-1.5">
-          <FileDown size={13} /> Exportar reporte a Excel
-        </button>
       </div>
 
-      {/* Árbol jerárquico */}
-      {origenesConDatos.length === 0 ? (
+      {pedidos.length === 0 ? (
         <div className="text-center py-12 text-app-dim2">
           <BarChart3 size={28} className="mx-auto mb-2 text-app-dim3" />
           <p className="text-sm">Sin pedidos en el rango seleccionado.</p>
         </div>
       ) : (
-        <div className="space-y-1.5">
-          {origenesConDatos.map((origenId) => {
-            const origenObj = arbol[origenId];
-            const totalOrigen = sumarNivel(origenObj);
-            const pathOrigen = origenId;
-            const origenInfo = ORIGENES.find((o) => o.id === origenId) || { emoji: '🏳', label: origenId };
-            return (
-              <div key={origenId} className="bg-app-panel border border-app-line rounded-xl overflow-hidden">
-                {/* Origen */}
-                <button onClick={() => toggle(pathOrigen)} className="w-full flex items-center justify-between px-3 py-2.5 active:bg-app-active">
-                  <div className="flex items-start gap-2 min-w-0 flex-1 pr-2">
-                    <ChevronDown size={14} className={`text-app-dim shrink-0 transition-transform ${isExp(pathOrigen) ? '' : '-rotate-90'}`} />
-                    <span className="text-base">{origenInfo.emoji}</span>
-                    <span className="text-sm font-semibold">{origenInfo.label}</span>
-                  </div>
-                  <Total {...totalOrigen} />
-                </button>
+        <>
+          {/* Tarjetas resumen */}
+          <div className="grid grid-cols-2 gap-2">
+            <Tarjeta titulo="Comprado" valor={fmtUSD(M.comprado)} variacionPct={variacion(M.comprado, Mprev.comprado)} />
+            <Tarjeta titulo="Órdenes" valor={M.ordenes} variacionPct={variacion(M.ordenes, Mprev.ordenes)} />
+            <Tarjeta titulo="Piezas" valor={M.piezas.toLocaleString()} variacionPct={variacion(M.piezas, Mprev.piezas)} />
+            <Tarjeta titulo="Costo promedio" valor={'$' + M.costoProm.toFixed(2)} variacionPct={variacion(M.costoProm, Mprev.costoProm)} invertir />
+            <Tarjeta titulo="Proveedores" valor={M.proveedores} sub="activos en el período" />
+            <Tarjeta titulo="Marcas / Países" valor={`${M.marcas} / ${M.paises}`} sub="distintos" />
+          </div>
 
-                {/* Compradores */}
-                {isExp(pathOrigen) && Object.entries(origenObj).map(([comprador, compObj]) => {
-                  const pathComp = `${pathOrigen}|${comprador}`;
-                  const totalComp = sumarNivel(compObj);
-                  return (
-                    <div key={comprador} className="border-t border-app-line">
-                      <button onClick={() => toggle(pathComp)} className="w-full flex items-center justify-between px-3 py-2 pl-8 active:bg-app-active">
-                        <div className="flex items-start gap-2 min-w-0 flex-1 pr-2">
-                          <ChevronDown size={12} className={`text-app-dim shrink-0 transition-transform ${isExp(pathComp) ? '' : '-rotate-90'}`} />
-                          <span className="text-xs font-medium text-app-light">👤 {comprador}</span>
-                        </div>
-                        <Total {...totalComp} />
-                      </button>
-
-                      {/* Proveedores */}
-                      {isExp(pathComp) && Object.entries(compObj).map(([prov, provObj]) => {
-                        const pathProv = `${pathComp}|${prov}`;
-                        const totalProv = sumarNivel(provObj);
-                        return (
-                          <div key={prov} className="border-t border-app-line bg-app-bg">
-                            <button onClick={() => toggle(pathProv)} className="w-full flex items-center justify-between px-3 py-2 pl-14 active:bg-app-active">
-                              <div className="flex items-start gap-2 min-w-0 flex-1 pr-2">
-                                <ChevronDown size={12} className={`text-app-dim shrink-0 transition-transform ${isExp(pathProv) ? '' : '-rotate-90'}`} />
-                                <span className="text-xs text-app-light break-words">🚚 {prov}</span>
-                              </div>
-                              <Total {...totalProv} />
-                            </button>
-
-                            {/* Marcas */}
-                            {isExp(pathProv) && Object.entries(provObj).map(([marca, marcaObj]) => {
-                              const pathMarca = `${pathProv}|${marca}`;
-                              const totalMarca = sumarNivel(marcaObj);
-                              return (
-                                <div key={marca} className="border-t border-app-line">
-                                  <button onClick={() => toggle(pathMarca)} className="w-full flex items-center justify-between px-3 py-1.5 pl-20 active:bg-app-active">
-                                    <div className="flex items-start gap-2 min-w-0 flex-1 pr-2">
-                                      <ChevronDown size={11} className={`text-app-dim shrink-0 transition-transform ${isExp(pathMarca) ? '' : '-rotate-90'}`} />
-                                      <span className="text-xs text-app-dim2 break-words">🏷 {marca}</span>
-                                    </div>
-                                    <Total {...totalMarca} />
-                                  </button>
-
-                                  {/* Departamentos */}
-                                  {isExp(pathMarca) && Object.entries(marcaObj).map(([depto, deptoObj]) => {
-                                    const pathDepto = `${pathMarca}|${depto}`;
-                                    const totalDepto = sumarNivel(deptoObj);
-                                    return (
-                                      <div key={depto} className="border-t border-app-line">
-                                        <button onClick={() => toggle(pathDepto)} className="w-full flex items-center justify-between px-3 py-1.5 pl-24 active:bg-app-active">
-                                          <div className="flex items-start gap-2 min-w-0 flex-1 pr-2">
-                                            <ChevronDown size={11} className={`text-app-dim shrink-0 transition-transform ${isExp(pathDepto) ? '' : '-rotate-90'}`} />
-                                            <span className="text-xs text-app-dim2 break-words">📁 {depto}</span>
-                                          </div>
-                                          <Total {...totalDepto} />
-                                        </button>
-
-                                        {/* Tipos (hoja del árbol) */}
-                                        {isExp(pathDepto) && Object.entries(deptoObj).map(([tipo, tot]) => (
-                                          <div key={tipo} className="border-t border-app-line flex items-start justify-between px-3 py-1.5 pl-28 bg-app-panel gap-2">
-                                            <span className="text-xs text-app-dim break-words flex-1 pr-2">• {tipo}</span>
-                                            <Total {...tot} />
-                                          </div>
-                                        ))}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
+          {/* Estado de pedidos */}
+          <Seccion titulo="Estado de pedidos">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="bg-app-bg rounded-lg py-2">
+                <p className="text-lg font-bold text-app-gold">{estados.pendiente || 0}</p>
+                <p className="text-xs text-app-dim2">Pendientes</p>
               </div>
-            );
-          })}
-        </div>
+              <div className="bg-app-bg rounded-lg py-2">
+                <p className="text-lg font-bold text-app-sky">{estados.enviado || 0}</p>
+                <p className="text-xs text-app-dim2">Enviados</p>
+              </div>
+              <div className="bg-app-bg rounded-lg py-2">
+                <p className="text-lg font-bold text-green-400">{estados.recibido || 0}</p>
+                <p className="text-xs text-app-dim2">Recibidos</p>
+              </div>
+            </div>
+          </Seccion>
+
+          {/* Compras por mes */}
+          <Seccion titulo="Compras por mes (USD)">
+            <LineaMeses datos={porMes} />
+          </Seccion>
+
+          {/* Comprador y Origen */}
+          <div className="grid grid-cols-1 gap-3">
+            <Seccion titulo="Compras por comprador">
+              <BarrasHoriz datos={porComprador} max={6} color="#5b9bd5" />
+            </Seccion>
+            <Seccion titulo="Compras por país de origen">
+              <Dona datos={porPais} />
+            </Seccion>
+          </div>
+
+          {/* Rankings */}
+          <Seccion titulo="Top 10 proveedores">
+            <RankingTabla datos={porProveedor} mostrarOrdenes />
+          </Seccion>
+          <Seccion titulo="Top 10 marcas">
+            <RankingTabla datos={porMarca} />
+          </Seccion>
+          <Seccion titulo="Top 10 departamentos">
+            <RankingTabla datos={porDepto} />
+          </Seccion>
+
+          {/* Alertas */}
+          <Seccion titulo="⚠️ Alertas">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-app-light">Pedidos atrasados (+90 días sin recibir)</span>
+                <span className={`font-bold ${pedidosAtrasados.length > 0 ? 'text-red-400' : 'text-app-dim3'}`}>{pedidosAtrasados.length}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-app-light">Proveedores sin actividad (+90 días)</span>
+                <span className={`font-bold ${proveedoresSinActividad.length > 0 ? 'text-app-gold' : 'text-app-dim3'}`}>{proveedoresSinActividad.length}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-app-light">Pedidos sin confirmar (pendientes)</span>
+                <span className={`font-bold ${sinConfirmar > 0 ? 'text-app-gold' : 'text-app-dim3'}`}>{sinConfirmar}</span>
+              </div>
+            </div>
+          </Seccion>
+        </>
       )}
     </div>
   );
