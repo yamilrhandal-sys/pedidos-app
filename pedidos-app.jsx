@@ -941,6 +941,17 @@ function PantallaVincular({ correo, usuarios = [], onVincular, onSalir }) {
 }
 
 const APP_STYLES = `
+  /* Quitar flechitas de los campos numéricos: cambiaban cantidades y precios
+     por accidente al hacer scroll o al tocarlas sin querer. */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
   .bg-app-bg { background-color: #13151a; }
   .bg-app-panel { background-color: #1a1d24; }
   .bg-app-bg-95 { background-color: rgba(19,21,26,0.95); }
@@ -2405,6 +2416,19 @@ function PedidosAppInterno() {
 
 // Punto de entrada: la app envuelta en la red de seguridad
 export default function PedidosApp() {
+  // Evita que la rueda del mouse cambie cantidades o precios sin querer
+  // cuando el cursor pasa sobre un campo numérico enfocado.
+  useEffect(() => {
+    const bloquearRueda = (e) => {
+      const el = document.activeElement;
+      if (el && el.type === 'number' && el === e.target) {
+        el.blur();
+      }
+    };
+    document.addEventListener('wheel', bloquearRueda, { passive: true });
+    return () => document.removeEventListener('wheel', bloquearRueda);
+  }, []);
+
   return (
     <LimiteDeError>
       <PedidosAppInterno />
