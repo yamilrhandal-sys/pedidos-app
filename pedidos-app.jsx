@@ -1144,6 +1144,314 @@ const varLabel = (v) => (v.cintura ? `Cintura ${v.cintura} / Largo ${v.largo}` :
 // Muestra la imagen en resolución original y permite pasar
 // entre las fotos del producto con flechas o deslizando.
 // ------------------------------------------------------------
+// ============================================================
+// CAPTURA CON CÁMARA — usa getUserMedia + enumerateDevices.
+// En macOS, si Cámara de Continuidad está activa, el iPhone
+// aparece como una cámara más en la lista y se puede elegir.
+// No requiere emparejamiento Bluetooth manual: es el sistema
+// operativo el que expone el iPhone como dispositivo de video.
+// ============================================================
+function CapturaCamara({ onUsarFoto, onCerrar }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [camaras, setCamaras] = useState([]);
+  const [camaraId, setCamaraId] = useState('');
+  const [captura, setCaptura] = useState(null);   // { blob, url }
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+
+  // Detiene cualquier stream activo (importante para liberar la cámara)
+  const detenerStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  // Enciende la cámara pedida (o la de por defecto si no se indica ninguna)
+  const iniciarCamara = useCallback(async (deviceId) => {
+    detenerStream();
+    setError('');
+    setCargando(true);
+    try {
+      const constraints = {
+        video: deviceId
+          ? { deviceId: { exact: deviceId }, width: { ideal: 3840 }, height: { ideal: 2160 } }
+          : { facingMode: 'environment', width: { ideal: 3840 }, height: { ideal: 2160 } },
+        audio: false,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+      // Las etiquetas de los dispositivos solo se conocen DESPUÉS de dar permiso,
+      // por eso se enumeran aquí y no antes.
+      const dispositivos = await navigator.mediaDevices.enumerateDevices();
+      const videos = dispositivos.filter((d) => d.kind === 'videoinput');
+      setCamaras(videos);
+      const actual = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+      setCamaraId(deviceId || actual || videos[0]?.deviceId || '');
+    } catch (err) {
+      const nombre = err?.name || '';
+      if (nombre === 'NotAllowedError') {
+        setError('Permiso de cámara denegado. Actívalo en los ajustes del navegador para este sitio.');
+      } else if (nombre === 'NotFoundError' || nombre === 'OverconstrainedError') {
+        setError('No se encontró ninguna cámara disponible.');
+      } else if (nombre === 'NotReadableError') {
+        setError('La cámara está siendo usada por otra aplicación. Ciérrala e intenta de nuevo.');
+      } else {
+        setError('No se pudo abrir la cámara: ' + (err?.message || nombre || 'error desconocido'));
+      }
+    } finally {
+      setCargando(false);
+    }
+  }, [detenerStream]);
+
+  useEffect(() => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Este navegador no permite usar la cámara. Usa "Elegir archivo".');
+      setCargando(false);
+      return;
+    }
+    iniciarCamara();
+    // Si el iPhone entra o sale por Cámara de Continuidad, la lista cambia en caliente
+    const alCambiar = async () => {
+      try {
+        const dispositivos = await navigator.mediaDevices.enumerateDevices();
+        setCamaras(dispositivos.filter((d) => d.kind === 'videoinput'));
+      } catch { /* ignorar */ }
+    };
+    navigator.mediaDevices.addEventListener?.('devicechange', alCambiar);
+    return () => {
+      navigator.mediaDevices.removeEventListener?.('devicechange', alCambiar);
+      detenerStream();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Libera el objeto URL de la vista previa al cambiarla o cerrar
+  useEffect(() => () => { if (captura?.url) URL.revokeObjectURL(captura.url); }, [captura]);
+
+  const tomarFoto = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const lienzo = document.createElement('canvas');
+    lienzo.width = video.videoWidth;
+    lienzo.height = video.videoHeight;
+    lienzo.getContext('2d').drawImage(video, 0, 0, lienzo.width, lienzo.height);
+    lienzo.toBlob(
+      (blob) => { if (blob) setCaptura({ blob, url: URL.createObjectURL(blob) }); },
+      'image/jpeg',
+      0.92,   // calidad alta: son fotos de producto
+    );
+  };
+
+  const repetir = () => {
+    if (captura?.url) URL.revokeObjectURL(captura.url);
+    setCaptura(null);
+  };
+
+  const confirmar = () => {
+    if (!captura?.blob) return;
+    const nombre = `camara-${Date.now()}.jpg`;
+    const archivo = new File([captura.blob], nombre, { type: 'image/jpeg' });
+    detenerStream();
+    onUsarFoto(archivo);
+  };
+
+  const cerrar = () => { detenerStream(); onCerrar(); };
+
+  // Nombre legible para cada cámara; marca el iPhone cuando se detecta
+  const etiquetaCamara = (d, i) => {
+    const base = d.label || `Cámara ${i + 1}`;
+    return /iphone|continuity/i.test(base) ? `📱 ${base}` : base;
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-2xl bg-app-panel border border-app-line rounded-2xl overflow-hidden flex flex-col">
+        {/* Encabezado */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-app-line">
+          <span className="text-sm font-semibold text-app-text flex items-center gap-2">
+            <Camera size={16} className="text-app-gold" />
+            {captura ? 'Revisar fotografía' : 'Tomar fotografía'}
+          </span>
+          <button onClick={cerrar} className="text-app-dim3 hover:text-app-text" aria-label="Cerrar">
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Cuerpo */}
+        <div className="relative bg-black flex items-center justify-center" style={{ minHeight: '260px' }}>
+          {error ? (
+            <div className="p-6 text-center">
+              <AlertCircle size={26} className="text-app-red mx-auto mb-2" />
+              <p className="text-sm text-app-dim2">{error}</p>
+            </div>
+          ) : captura ? (
+            <img src={captura.url} alt="Vista previa" className="max-h-[55vh] w-auto object-contain" />
+          ) : (
+            <>
+              <video
+                ref={videoRef}
+                playsInline
+                muted
+                autoPlay
+                className="max-h-[55vh] w-auto object-contain"
+              />
+              {cargando && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-xs text-app-dim2">Abriendo cámara…</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Selector de cámara: aquí aparece el iPhone si Continuity lo expone */}
+        {!captura && !error && camaras.length > 1 && (
+          <div className="px-4 pt-3">
+            <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 block">Cámara</label>
+            <select
+              value={camaraId}
+              onChange={(e) => { setCamaraId(e.target.value); iniciarCamara(e.target.value); }}
+              className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm"
+            >
+              {camaras.map((d, i) => (
+                <option key={d.deviceId || i} value={d.deviceId}>{etiquetaCamara(d, i)}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Botones */}
+        <div className="p-4 flex gap-2">
+          {error ? (
+            <>
+              <button onClick={() => iniciarCamara(camaraId)} className="flex-1 py-2.5 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">
+                Reintentar
+              </button>
+              <button onClick={cerrar} className="px-4 py-2.5 rounded-lg border border-app-line text-sm text-app-dim2">
+                Cancelar
+              </button>
+            </>
+          ) : captura ? (
+            <>
+              <button onClick={confirmar} className="flex-1 py-2.5 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">
+                Usar foto
+              </button>
+              <button onClick={repetir} className="px-4 py-2.5 rounded-lg border border-app-line text-sm text-app-dim2">
+                Tomar nuevamente
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={tomarFoto}
+                disabled={cargando}
+                className="flex-1 py-2.5 rounded-lg bg-app-gold text-app-bg text-sm font-semibold disabled:opacity-50"
+              >
+                Tomar foto
+              </button>
+              <button onClick={cerrar} className="px-4 py-2.5 rounded-lg border border-app-line text-sm text-app-dim2">
+                Cancelar
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Ayuda para Cámara de Continuidad */}
+        {!captura && !error && (
+          <p className="px-4 pb-3 text-xs text-app-dim3 text-center">
+            ¿No aparece tu iPhone? Debe estar cerca, desbloqueado y con Wi‑Fi y Bluetooth activos.
+            Aparecerá solo en la lista de cámaras.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SELECTOR DE FOTOS — reemplaza el área "Tomar foto o elegir".
+// Mantiene intacta la subida por archivo y añade la cámara.
+// ============================================================
+function SelectorFotos({ onArchivos, subiendo = false, hayFotos = false, error = '', compacto = false }) {
+  const [camaraAbierta, setCamaraAbierta] = useState(false);
+  const inputRef = useRef(null);
+  const puedeUsarCamara = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+
+  const alElegirArchivos = (e) => {
+    const archivos = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (archivos.length) onArchivos(archivos);
+  };
+
+  return (
+    <>
+      <div className={`w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center
+                       gap-2 ${compacto ? 'py-3 px-3' : 'py-4 px-3'} text-center
+                       ${subiendo ? 'opacity-60 pointer-events-none' : ''}`}>
+        <Camera size={compacto ? 18 : 20} className="text-app-dim3" />
+        <span className="text-xs text-app-dim2">
+          {subiendo ? 'Subiendo…' : hayFotos ? 'Agregar más fotos' : 'Agregar fotografías del producto'}
+        </span>
+
+        <div className="flex flex-wrap justify-center gap-2 w-full">
+          {puedeUsarCamara && (
+            <button
+              type="button"
+              onClick={() => setCamaraAbierta(true)}
+              disabled={subiendo}
+              className="px-3 py-1.5 rounded-lg border border-app-gold text-app-gold text-xs font-medium
+                         flex items-center gap-1.5 active:bg-app-active disabled:opacity-50"
+            >
+              <Camera size={13} /> Tomar foto
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={subiendo}
+            className="px-3 py-1.5 rounded-lg border border-app-line3 text-app-dim2 text-xs font-medium
+                       flex items-center gap-1.5 active:bg-app-active disabled:opacity-50"
+          >
+            <Upload size={13} /> Elegir archivo
+          </button>
+        </div>
+
+        {puedeUsarCamara && (
+          <span className="text-xs text-app-dim3">
+            En Mac, tu iPhone aparece dentro de "Tomar foto" si Cámara de Continuidad está activa
+          </span>
+        )}
+        {!compacto && <span className="text-xs text-app-dim3">Se guardan en resolución original</span>}
+
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={alElegirArchivos}
+          disabled={subiendo}
+        />
+      </div>
+
+      {error && <p className="text-xs text-app-red">{error}</p>}
+
+      {camaraAbierta && (
+        <CapturaCamara
+          onCerrar={() => setCamaraAbierta(false)}
+          onUsarFoto={(archivo) => { setCamaraAbierta(false); onArchivos([archivo]); }}
+        />
+      )}
+    </>
+  );
+}
+
 function VisorFotos({ fotos = [], indiceInicial = 0, titulo = '', onCerrar }) {
   const [i, setI] = useState(indiceInicial);
   const total = fotos.length;
@@ -5684,10 +5992,9 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
     updateField({ departamento: v, genero: generoSugerido });
   };
 
-  const handlePhoto = async (e) => {
-    const archivos = Array.from(e.target.files || []);
-    e.target.value = '';
-    if (!archivos.length) return;
+  // Recibe archivos ya listos (del selector de archivos o de la cámara)
+  const handleArchivos = async (archivos) => {
+    if (!archivos?.length) return;
     setSubiendoFotos(true);
     setErrorFoto('');
     try {
@@ -5705,6 +6012,13 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
     } finally {
       setSubiendoFotos(false);
     }
+  };
+
+  // Se conserva por compatibilidad con cualquier <input type="file"> existente
+  const handlePhoto = async (e) => {
+    const archivos = Array.from(e.target.files || []);
+    e.target.value = '';
+    await handleArchivos(archivos);
   };
 
   const quitarFoto = async (indice) => {
@@ -5935,31 +6249,12 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
           </div>
         )}
 
-        <label
-          className={`w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center
-                      justify-center gap-1 py-4 px-3 text-center cursor-pointer
-                      ${subiendoFotos ? 'opacity-60 pointer-events-none' : 'hover:border-app-gold'}`}
-        >
-          <Camera size={20} className="text-app-dim3" />
-          <span className="text-xs text-app-dim2">
-            {subiendoFotos
-              ? 'Subiendo…'
-              : (form.fotos || []).length
-                ? 'Agregar más fotos'
-                : 'Tomar foto o elegir del dispositivo'}
-          </span>
-          <span className="text-xs text-app-dim3">Se guardan en resolución original</span>
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={handlePhoto}
-            disabled={subiendoFotos}
-          />
-        </label>
-
-        {errorFoto && <p className="text-xs text-app-red">{errorFoto}</p>}
+        <SelectorFotos
+          onArchivos={handleArchivos}
+          subiendo={subiendoFotos}
+          hayFotos={(form.fotos || []).length > 0}
+          error={errorFoto}
+        />
       </div>
 
       <div>
@@ -6445,10 +6740,9 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
     });
   };
 
-  const handlePhoto = async (e) => {
-    const archivos = Array.from(e.target.files || []);
-    e.target.value = '';
-    if (!archivos.length) return;
+  // Recibe archivos ya listos (del selector de archivos o de la cámara)
+  const handleArchivos = async (archivos) => {
+    if (!archivos?.length) return;
     setSubiendoFotos(true);
     setErrorFoto('');
     try {
@@ -6466,6 +6760,13 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
     } finally {
       setSubiendoFotos(false);
     }
+  };
+
+  // Se conserva por compatibilidad con cualquier <input type="file"> existente
+  const handlePhoto = async (e) => {
+    const archivos = Array.from(e.target.files || []);
+    e.target.value = '';
+    await handleArchivos(archivos);
   };
 
   const quitarFoto = async (indice) => {
@@ -6590,28 +6891,13 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
           </div>
         )}
 
-        <label
-          className={`w-full rounded-lg border border-dashed border-app-line3 flex flex-col items-center
-                      justify-center gap-1 py-4 px-3 text-center cursor-pointer
-                      ${subiendoFotos ? 'opacity-60 pointer-events-none' : 'hover:border-app-gold'}`}
-        >
-          <Camera size={18} className="text-app-dim3" />
-          <span className="text-xs text-app-dim2">
-            {subiendoFotos
-              ? 'Subiendo…'
-              : (form.fotos || []).length ? 'Agregar más fotos' : 'Tomar foto o elegir del dispositivo'}
-          </span>
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={handlePhoto}
-            disabled={subiendoFotos}
-          />
-        </label>
-
-        {errorFoto && <p className="text-xs text-app-red">{errorFoto}</p>}
+        <SelectorFotos
+          onArchivos={handleArchivos}
+          subiendo={subiendoFotos}
+          hayFotos={(form.fotos || []).length > 0}
+          error={errorFoto}
+          compacto
+        />
       </div>
 
       <input
