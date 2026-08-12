@@ -3146,6 +3146,8 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const [fechaHasta, setFechaHasta] = useState('');
   const [deptosAbiertos, setDeptosAbiertos] = useState(new Set());
   const [rankingsAbiertos, setRankingsAbiertos] = useState(new Set());
+  // Filtro de destino: ver todo junto, solo Honduras o solo Afiliada
+  const [destinoFiltro, setDestinoFiltro] = useState('todos'); // todos | H | G
 
   // ---- Filtro de fechas ----
   const enRango = (lista) => {
@@ -3192,27 +3194,36 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
     });
   })();
 
+  // ---- Filtro por destino ----
+  // Los items sin destino (USA/Panamá) se consideran de Honduras por defecto.
+  const destinoDe = (it) => it.destino || 'H';
+  const itemsDe = (o, destino = destinoFiltro) =>
+    (o.items || []).filter((it) => destino === 'todos' || destinoDe(it) === destino);
+
   // ---- USD por item ----
   const usdItem = (it) => {
     let usd = parseFloat(it.costoMonto) || 0;
     if (it.costoMoneda === 'RMB') usd = usd / (parseFloat(tasaCambio?.rmbUsd) || 7.25);
     return usd * sumVariantes(it.variantes);
   };
-  const usdPedido = (o) => (o.items || []).reduce((s, it) => s + usdItem(it), 0);
-  const pzsPedido = (o) => (o.items || []).reduce((s, it) => s + sumVariantes(it.variantes), 0);
+  const usdPedido = (o, destino) => itemsDe(o, destino).reduce((s, it) => s + usdItem(it), 0);
+  const pzsPedido = (o, destino) => itemsDe(o, destino).reduce((s, it) => s + sumVariantes(it.variantes), 0);
 
   // ---- Métricas del período ----
-  const metricas = (lista) => {
+  const metricas = (lista, destino = destinoFiltro) => {
     let comprado = 0, piezas = 0;
     const proveedores = new Set(), paises = new Set(), marcas = new Set();
+    let ordenes = 0;
     lista.forEach((o) => {
-      comprado += usdPedido(o);
-      piezas += pzsPedido(o);
+      const items = itemsDe(o, destino);
+      if (items.length === 0) return;   // el pedido no aporta nada a este destino
+      ordenes++;
+      comprado += usdPedido(o, destino);
+      piezas += pzsPedido(o, destino);
       if (o.supplierId) proveedores.add(o.supplierId);
       if (o.origen) paises.add(o.origen);
-      (o.items || []).forEach((it) => { if (it.marca) marcas.add(it.marca); });
+      items.forEach((it) => { if (it.marca) marcas.add(it.marca); });
     });
-    const ordenes = lista.length;
     return {
       comprado, piezas, ordenes,
       costoProm: piezas > 0 ? comprado / piezas : 0,
@@ -3222,16 +3233,20 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const M = metricas(pedidos);
   const Mprev = metricas(pedidosPrev);
 
+  // Métricas por destino, para el comparativo lado a lado
+  const Mhn = metricas(pedidos, 'H');
+  const Maf = metricas(pedidos, 'G');
+
   const variacion = (act, prev) => {
     if (!prev || prev === 0) return null;
     return ((act - prev) / prev) * 100;
   };
 
   // ---- Agrupaciones para rankings y gráficas ----
-  const acum = (keyFn) => {
+  const acum = (keyFn, destino = destinoFiltro) => {
     const m = {};
     pedidos.forEach((o) => {
-      (o.items || []).forEach((it) => {
+      itemsDe(o, destino).forEach((it) => {
         const k = keyFn(o, it);
         if (!k) return;
         m[k] = m[k] || { usd: 0, pzs: 0, ordenes: new Set() };
@@ -3255,7 +3270,7 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   const deptoConTipos = (() => {
     const m = {};
     pedidos.forEach((o) => {
-      (o.items || []).forEach((it) => {
+      itemsDe(o).forEach((it) => {
         const depto = it.departamento || 'Sin depto';
         const tipo = it.tipo || 'Sin tipo';
         m[depto] = m[depto] || { usd: 0, pzs: 0, tipos: {} };
@@ -3293,16 +3308,28 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
 
   // Estados de pedido
   const estados = { pendiente: 0, enviado: 0, recibido: 0 };
-  pedidos.forEach((o) => { estados[o.status || 'pendiente'] = (estados[o.status || 'pendiente'] || 0) + 1; });
+  pedidos.forEach((o) => {
+    if (itemsDe(o).length === 0) return;
+    estados[o.status || 'pendiente'] = (estados[o.status || 'pendiente'] || 0) + 1;
+  });
 
   // ---- Exportar Excel ----
   const exportarExcel = () => {
     const rows = [];
+    const etiquetaDestino =
+      destinoFiltro === 'H' ? 'Honduras' : destinoFiltro === 'G' ? 'Afiliada' : 'Ambos destinos';
+    rows.push({ Métrica: 'DESTINO DEL REPORTE', Valor: etiquetaDestino });
+    rows.push({});
     rows.push({ Métrica: 'Total comprado (USD)', Valor: Math.round(M.comprado) });
     rows.push({ Métrica: 'Órdenes', Valor: M.ordenes });
     rows.push({ Métrica: 'Piezas', Valor: M.piezas });
     rows.push({ Métrica: 'Costo promedio (USD)', Valor: parseFloat(M.costoProm.toFixed(2)) });
     rows.push({ Métrica: 'Proveedores activos', Valor: M.proveedores });
+    rows.push({});
+    // Comparativo por destino, siempre incluido
+    rows.push({ Métrica: 'COMPARATIVO POR DESTINO', Valor: '' });
+    rows.push({ Métrica: 'Honduras — comprado (USD)', Valor: Math.round(Mhn.comprado), Piezas: Mhn.piezas, Órdenes: Mhn.ordenes });
+    rows.push({ Métrica: 'Afiliada — comprado (USD)', Valor: Math.round(Maf.comprado), Piezas: Maf.piezas, Órdenes: Maf.ordenes });
     rows.push({});
     rows.push({ Métrica: 'TOP PROVEEDORES', Valor: '' });
     porProveedor.slice(0, 10).forEach((r) => rows.push({ Métrica: r.nombre, Valor: Math.round(r.usd), Piezas: r.pzs, Órdenes: r.ordenes }));
@@ -3322,7 +3349,8 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
     ws['!cols'] = [{ wch: 28 }, { wch: 16 }, { wch: 10 }, { wch: 10 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Dashboard');
-    descargarLibro(wb, `dashboard_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const sufijo = destinoFiltro === 'H' ? '_honduras' : destinoFiltro === 'G' ? '_afiliada' : '';
+    descargarLibro(wb, `dashboard${sufijo}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // ================= Sub-componentes visuales =================
@@ -3492,6 +3520,23 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
             <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} className="flex-1 bg-app-bg border border-app-line rounded-lg px-2 py-1.5 text-xs" />
           </div>
         )}
+
+        {/* Filtro de destino: todo el dashboard se recalcula según esta selección */}
+        <div className="pt-1 border-t border-app-line">
+          <p className="text-xs text-app-dim2 mb-1.5">Destino</p>
+          <div className="flex gap-1.5">
+            {[
+              { id: 'todos', label: 'Ambos', emoji: '📦' },
+              { id: 'H', label: 'Honduras', emoji: '🇭🇳' },
+              { id: 'G', label: 'Afiliada', emoji: '🇬🇹' },
+            ].map((d) => (
+              <button key={d.id} onClick={() => setDestinoFiltro(d.id)}
+                className={`flex-1 text-xs rounded-lg border px-2 py-1.5 ${destinoFiltro === d.id ? 'bg-app-gold text-app-bg border-app-gold font-semibold' : 'bg-app-bg border-app-line text-app-light'}`}>
+                {d.emoji} {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {pedidos.length === 0 ? (
@@ -3501,6 +3546,44 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
         </div>
       ) : (
         <>
+          {/* Comparativo Honduras vs Afiliada — siempre visible, sin importar el filtro */}
+          <Seccion titulo="Honduras vs Afiliada">
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { m: Mhn, label: 'Honduras', emoji: '🇭🇳', color: '#5b9bd5', id: 'H' },
+                { m: Maf, label: 'Afiliada', emoji: '🇬🇹', color: '#70ad47', id: 'G' },
+              ].map((d) => {
+                const totalUSD = Mhn.comprado + Maf.comprado;
+                const pct = totalUSD > 0 ? (d.m.comprado / totalUSD) * 100 : 0;
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() => setDestinoFiltro(destinoFiltro === d.id ? 'todos' : d.id)}
+                    className={`text-left bg-app-bg rounded-lg p-2.5 border ${destinoFiltro === d.id ? 'border-app-gold' : 'border-app-line'}`}
+                  >
+                    <p className="text-xs text-app-dim2">{d.emoji} {d.label}</p>
+                    <p className="text-base font-bold text-app-white mt-0.5">{fmtUSD(d.m.comprado)}</p>
+                    <div className="h-1.5 bg-app-panel rounded-full overflow-hidden my-1.5">
+                      <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: d.color }} />
+                    </div>
+                    <p className="text-xs text-app-dim3">{pct.toFixed(0)}% del total</p>
+                    <div className="mt-1.5 pt-1.5 border-t border-app-line space-y-0.5">
+                      <p className="text-xs text-app-dim2">{d.m.piezas.toLocaleString()} pzs</p>
+                      <p className="text-xs text-app-dim2">{d.m.ordenes} órdenes</p>
+                      <p className="text-xs text-app-dim2">${d.m.costoProm.toFixed(2)} costo prom.</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            {destinoFiltro !== 'todos' && (
+              <p className="text-xs text-app-gold mt-2">
+                Mostrando solo {destinoFiltro === 'H' ? '🇭🇳 Honduras' : '🇬🇹 Afiliada'} en todo el dashboard.
+                Toca de nuevo para ver ambos.
+              </p>
+            )}
+          </Seccion>
+
           {/* Tarjetas resumen */}
           <div className="grid grid-cols-2 gap-2">
             <Tarjeta titulo="Comprado" valor={fmtUSD(M.comprado)} variacionPct={variacion(M.comprado, Mprev.comprado)} />
