@@ -6027,7 +6027,9 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
   const [codigoEditado, setCodigoEditado] = useState(false); // el usuario escribió el código a mano
   const [openFieldId, setOpenFieldId] = useState(null);
   const [descEditada, setDescEditada] = useState(false);
-  const [sinTalla, setSinTalla] = useState(false);
+  // Por defecto los productos se capturan SIN talla (surtido). El comprador
+  // presiona "Por talla" solo cuando necesita desglosar por talla.
+  const [sinTalla, setSinTalla] = useState(true);
   const [tallasOverride, setTallasOverride] = useState(null); // grupo de tallas elegido para ESTE producto (null = usa las del tipo)
   const [matrix, setMatrix] = useState({});       // cantidades del pedido (solo en pedidoMode)
   const [qtySinTalla, setQtySinTalla] = useState({}); // cantidades sin talla por color
@@ -6440,7 +6442,9 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         <p className="text-xs text-app-gold">No tienes tipos creados. Toca el ícono de ajustes en el catálogo para agregar uno.</p>
       )}
 
-      {tipoSeleccionado?.subtipos && tipoSeleccionado.subtipos.length > 0 && (
+      {/* Subtipo: siempre visible cuando hay un tipo elegido.
+          Si el subtipo no existe todavía, se puede crear desde aquí. */}
+      {tipoSeleccionado && (
         <div>
           <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 flex items-center justify-between">
             <span>Subtipo</span>
@@ -6452,8 +6456,20 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
             setOpenId={setOpenFieldId}
             value={form.subtipo}
             onChange={(v) => updateField({ subtipo: v })}
-            options={tipoSeleccionado.subtipos}
-            placeholder={`Buscar subtipo de ${tipoSeleccionado.nombre}…`}
+            options={tipoSeleccionado.subtipos || []}
+            placeholder={`Buscar o agregar subtipo de ${tipoSeleccionado.nombre}…`}
+            onCreate={(nuevo) => {
+              const limpio = (nuevo || '').trim();
+              if (!limpio) return;
+              // Guardar el subtipo dentro del tipo para que quede disponible después
+              const actualizados = tipos.map((t) =>
+                t.id === tipoSeleccionado.id
+                  ? { ...t, subtipos: [...(t.subtipos || []), limpio] }
+                  : t
+              );
+              onUpdateTipos?.(actualizados);
+              updateField({ subtipo: limpio });
+            }}
           />
         </div>
       )}
@@ -6540,15 +6556,15 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs uppercase tracking-wide text-app-dim2">
               {pedidoMode
-                ? `Cantidad del pedido por talla${esDocena ? ' (en docenas)' : ''}`
+                ? `Cantidad del pedido${sinTalla ? '' : ' por talla'}${esDocena ? ' (en docenas)' : ''}`
                 : 'Tallas disponibles'}
             </label>
             <button
               type="button"
               onClick={() => { setSinTalla(!sinTalla); setMatrix({}); setQtySinTalla({}); }}
-              className={`text-xs px-2.5 py-1 rounded-lg border ${sinTalla ? 'bg-app-gold text-app-bg border-app-gold font-semibold' : 'bg-app-bg border-app-line text-app-dim2'}`}
+              className={`text-xs px-2.5 py-1 rounded-lg border ${sinTalla ? 'bg-app-bg border-app-line text-app-dim2' : 'bg-app-gold text-app-bg border-app-gold font-semibold'}`}
             >
-              Sin talla
+              {sinTalla ? 'Desglosar por talla' : 'Sin talla'}
             </button>
           </div>
           {!sinTalla && !esCinturaLargo && (
@@ -6814,7 +6830,7 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
 }
 
 // ---------- Formulario de edición de producto ----------
-function EditProductForm({ product, products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], fabricas = [], onSave, onCancel }) {
+function EditProductForm({ product, products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], fabricas = [], onSave, onCancel, onUpdateTipos }) {
   const tipoObj = tipos.find((t) => t.nombre === product.tipo);
   const esCLInit = tipoObj?.medida === 'cintura_largo';
 
@@ -7062,10 +7078,23 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
         value={form.tipo} onChange={(v) => { updateField({ tipo: v, subtipo: '' }); setMatrix({}); }}
         options={tipos.map((t) => t.nombre)} placeholder="Buscar tipo de producto…" recentKey="tipo" />
 
-      {tipoSeleccionado?.subtipos?.length > 0 && (
+      {/* Subtipo: siempre visible, opcional, y se puede crear si no existe */}
+      {tipoSeleccionado && (
         <SearchableSelect id="e-subtipo" openId={openFieldId} setOpenId={setOpenFieldId}
           value={form.subtipo} onChange={(v) => updateField({ subtipo: v })}
-          options={tipoSeleccionado.subtipos} placeholder={`Subtipo de ${tipoSeleccionado.nombre}…`} />
+          options={tipoSeleccionado.subtipos || []}
+          placeholder={`Buscar o agregar subtipo de ${tipoSeleccionado.nombre}…`}
+          onCreate={(nuevo) => {
+            const limpio = (nuevo || '').trim();
+            if (!limpio) return;
+            const actualizados = tipos.map((t) =>
+              t.id === tipoSeleccionado.id
+                ? { ...t, subtipos: [...(t.subtipos || []), limpio] }
+                : t
+            );
+            onUpdateTipos?.(actualizados);
+            updateField({ subtipo: limpio });
+          }} />
       )}
 
       <div>
@@ -7387,6 +7416,7 @@ function Catalogo({ products = [], setProducts, departamentos = [], tipos = [], 
                               marcas={marcas}
                               ciudades={ciudades}
                               fabricas={fabricas}
+                              onUpdateTipos={setTipos}
                               onSave={saveEdit}
                               onCancel={() => setEditingProductId(null)}
                             />
