@@ -3890,6 +3890,243 @@ function TotalesConversion({ totals, tasaCambio, setTasaCambio, label = 'Total e
   );
 }
 
+// ============================================================
+// IMPORTAR DESDE EXCEL — Modal para cargar pedidos desde template
+// ============================================================
+function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, onImportar, onCancel }) {
+  const [filas, setFilas] = useState([]);
+  const [procesando, setProcesando] = useState(false);
+  const [estandarizado, setEstandarizado] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const fileRef = useRef();
+
+  const leerExcel = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setErrorMsg('');
+    setEstandarizado(false);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: 'array' });
+        const ws = wb.Sheets['PEDIDO'] || wb.Sheets[wb.SheetNames[0]];
+        const datos = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        const mapeadas = datos
+          .filter(r => {
+            const cod = String(r['Código'] || r['Codigo'] || r['codigo'] || '').trim();
+            return cod && !cod.includes('EJEMPLO');
+          })
+          .map((r, i) => ({
+            _id: i,
+            codigo: String(r['Código'] || r['Codigo'] || r['codigo'] || '').trim(),
+            descProveedor: String(r['Descripción Proveedor'] || r['Descripcion Proveedor'] || r['descripcion'] || '').trim(),
+            marca: String(r['Marca'] || r['marca'] || '').trim(),
+            departamento: String(r['Departamento'] || r['departamento'] || '').trim(),
+            tipo: String(r['Tipo'] || r['tipo'] || '').trim(),
+            cantidad: Math.max(0, parseInt(String(r['Cantidad'] || r['cantidad'] || '0')) || 0),
+            precioUSD: Math.max(0, parseFloat(String(r['Precio USD'] || r['precio'] || '0').replace(',', '.')) || 0),
+            ciudad: String(r['Ciudad'] || r['ciudad'] || '').trim(),
+            descFinal: '',
+          }));
+        if (mapeadas.length === 0) { setErrorMsg('No se encontraron filas con datos. Verifica que el archivo usa el template de CARRION.'); return; }
+        setFilas(mapeadas);
+      } catch (err) {
+        setErrorMsg('Error al leer el archivo: ' + (err.message || err));
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
+
+  const estandarizarConIA = async () => {
+    if (filas.length === 0) return;
+    setProcesando(true);
+    setErrorMsg('');
+    try {
+      const lista = filas.map((f, i) =>
+        `${i + 1}. Código: ${f.codigo} | Descripción proveedor: "${f.descProveedor}" | Marca: ${f.marca} | Departamento: ${f.departamento} | Tipo: ${f.tipo}`
+      ).join('\n');
+
+      const prompt = `Eres un estandarizador de descripciones de productos para el catálogo de Tiendas Carrion, Honduras.
+Para cada producto genera UNA descripción estandarizada en español, máximo 60 caracteres, clara y comercial.
+Usa la descripción del proveedor como base pero tradúcela/adáptala al español si está en otro idioma.
+Incluye: tipo de prenda + característica principal + color o talla si aplica.
+
+Productos:
+${lista}
+
+Responde ÚNICAMENTE con un JSON array de strings en el mismo orden, sin explicaciones ni formato extra.
+Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-XL"]`;
+
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1000,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const data = await resp.json();
+      const texto = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      const limpio = texto.replace(/```json|```/g, '').trim();
+      const sugerencias = JSON.parse(limpio);
+      if (!Array.isArray(sugerencias)) throw new Error('Respuesta inesperada de la IA');
+      setFilas(prev => prev.map((f, i) => ({ ...f, descFinal: sugerencias[i] || f.descProveedor })));
+      setEstandarizado(true);
+    } catch (err) {
+      setErrorMsg('Error al estandarizar: ' + (err.message || err) + '. Puedes editar las descripciones manualmente.');
+      setFilas(prev => prev.map(f => ({ ...f, descFinal: f.descFinal || f.descProveedor })));
+      setEstandarizado(true);
+    } finally {
+      setProcesando(false);
+    }
+  };
+
+  const actualizarDesc = (id, valor) => {
+    setFilas(prev => prev.map(f => f._id === id ? { ...f, descFinal: valor } : f));
+  };
+
+  const confirmarImportacion = () => {
+    const nuevosProductos = [];
+    const nuevosItems = [];
+    filas.forEach(f => {
+      const desc = (f.descFinal || f.descProveedor || f.codigo).trim();
+      const id = uid();
+      const producto = {
+        id, codigo: f.codigo, descripcion: desc,
+        tipo: f.tipo, subtipo: '', departamento: f.departamento,
+        marca: f.marca, ciudad: f.ciudad, fabrica: '',
+        costoMonto: f.precioUSD, costoMoneda: 'USD',
+        origen: origen?.id || '', medida: 'simple',
+        tallas: [], variantes: [], foto: null, fotos: [],
+      };
+      nuevosProductos.push(producto);
+      if (f.cantidad > 0) {
+        nuevosItems.push({
+          productId: id, codigo: f.codigo, descripcion: desc,
+          destino: 'H', origen: origen?.id || '',
+          tipo: f.tipo, subtipo: '', departamento: f.departamento,
+          marca: f.marca, ciudad: f.ciudad, fabrica: '',
+          costoMonto: f.precioUSD, costoMoneda: 'USD',
+          ventaLempiras: null, foto: null, fotos: [],
+          variantes: [{ talla: 'Única', cantidad: f.cantidad, color: '' }],
+        });
+      }
+    });
+    onImportar(nuevosProductos, nuevosItems);
+  };
+
+  const totalUSD = filas.reduce((s, f) => s + f.precioUSD * f.cantidad, 0);
+  const totalPzs = filas.reduce((s, f) => s + f.cantidad, 0);
+
+  return (
+    <div className="mt-2 rounded-xl border border-app-line bg-app-panel p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-app-text flex items-center gap-2">
+          <Upload size={15} className="text-amber-400" /> Importar desde Excel
+        </span>
+        <button onClick={onCancel} className="text-app-dim3 hover:text-app-text"><X size={16} /></button>
+      </div>
+
+      {/* Paso 1: Subir archivo */}
+      {filas.length === 0 && (
+        <div>
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="w-full py-6 rounded-xl border-2 border-dashed border-amber-400/40 text-sm text-app-dim2 flex flex-col items-center gap-2 hover:border-amber-400/70 active:bg-app-active transition-colors"
+          >
+            <Upload size={22} className="text-amber-400" />
+            <span>Seleccionar archivo Excel</span>
+            <span className="text-xs text-app-dim3">Usa el template CARRION (.xlsx)</span>
+          </button>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={leerExcel} className="hidden" />
+          {errorMsg && <p className="mt-2 text-xs text-red-400">{errorMsg}</p>}
+        </div>
+      )}
+
+      {/* Paso 2: Revisar filas */}
+      {filas.length > 0 && (
+        <>
+          <div className="flex items-center gap-2 text-xs text-app-dim2">
+            <span className="text-green-400 font-semibold">{filas.length} filas</span>
+            <span>·</span><span>{totalPzs} piezas</span>
+            <span>·</span><span>${totalUSD.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
+            <button onClick={() => { setFilas([]); setEstandarizado(false); }} className="ml-auto text-app-dim3 hover:text-red-400 text-xs">Cambiar archivo</button>
+          </div>
+
+          {/* Tabla de revisión */}
+          <div className="overflow-x-auto rounded-lg border border-app-line max-h-64 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-app-bg sticky top-0">
+                <tr>
+                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','Cant','USD'].map(h => (
+                    <th key={h} className="px-2 py-1.5 text-left text-app-dim2 font-medium whitespace-nowrap border-b border-app-line">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-app-line">
+                {filas.map(f => (
+                  <tr key={f._id} className="hover:bg-app-active">
+                    <td className="px-2 py-1.5 text-app-dim font-mono whitespace-nowrap">{f.codigo}</td>
+                    <td className="px-2 py-1.5 text-app-dim max-w-[140px] truncate" title={f.descProveedor}>{f.descProveedor}</td>
+                    <td className="px-2 py-1.5 min-w-[160px]">
+                      {estandarizado ? (
+                        <input
+                          value={f.descFinal}
+                          onChange={e => actualizarDesc(f._id, e.target.value)}
+                          className="w-full bg-app-bg border border-amber-400/40 rounded px-1.5 py-0.5 text-xs text-app-text focus:outline-none focus:ring-1 focus:ring-amber-400"
+                        />
+                      ) : (
+                        <span className="text-app-dim3 italic">— pendiente IA —</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.marca}</td>
+                    <td className="px-2 py-1.5 text-app-dim whitespace-nowrap max-w-[100px] truncate">{f.departamento}</td>
+                    <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.tipo}</td>
+                    <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidad}</td>
+                    <td className="px-2 py-1.5 text-app-text text-right">{f.precioUSD.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {errorMsg && <p className="text-xs text-red-400">{errorMsg}</p>}
+
+          {/* Botones */}
+          <div className="flex gap-2">
+            {!estandarizado ? (
+              <button
+                onClick={estandarizarConIA}
+                disabled={procesando}
+                className="flex-1 py-2 rounded-lg bg-amber-400 text-app-bg text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {procesando ? '⏳ Estandarizando descripciones…' : '✨ Estandarizar descripciones con IA'}
+              </button>
+            ) : (
+              <button
+                onClick={confirmarImportacion}
+                className="flex-1 py-2 rounded-lg bg-green-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5"
+              >
+                <Plus size={14} /> Importar {filas.length} producto{filas.length !== 1 ? 's' : ''} al pedido
+              </button>
+            )}
+            {estandarizado && (
+              <button
+                onClick={() => setEstandarizado(false)}
+                className="px-3 py-2 rounded-lg border border-app-line text-xs text-app-dim2"
+              >
+                Re-estandarizar
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [supplierId, setSupplierId] = useState(borrador?.supplierId || suppliers[0]?.id || '');
@@ -3901,6 +4138,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   const [draftDestino, setDraftDestino] = useState('H');
   const [draftPrecio, setDraftPrecio] = useState('');   // precio editable del producto expandido
   const [showNewProduct, setShowNewProduct] = useState(false);
+  const [showImportExcel, setShowImportExcel] = useState(false);
   const [codigoInicio, setCodigoInicio] = useState(borrador?.codigoInicio || ''); // número de inicio del correlativo (solo China)
   const [embarcadorId, setEmbarcadorId] = useState(borrador?.embarcadorId || ''); // compañía de embarque (USA/Panamá)
   const [ciudadPorDefecto, setCiudadPorDefecto] = useState(borrador?.ciudadPorDefecto || ''); // ciudad elegida en el primer artículo
@@ -4276,13 +4514,45 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
           </div>
         </div>
 
-        {!showNewProduct ? (
-          <button
-            onClick={() => setShowNewProduct(true)}
-            className="mt-2 w-full py-2.5 rounded-xl border border-dashed border-app-line3 text-sm text-app-dim2 flex items-center justify-center gap-2 active:bg-app-panel"
-          >
-            <Plus size={16} /> ¿No existe en el catálogo? Crear producto nuevo
-          </button>
+        {!showNewProduct && !showImportExcel ? (
+          <div className="mt-2 flex flex-col gap-1.5">
+            <button
+              onClick={() => setShowImportExcel(true)}
+              className="w-full py-2.5 rounded-xl border border-dashed border-amber-400/50 text-sm text-amber-400 flex items-center justify-center gap-2 active:bg-app-panel"
+            >
+              <Upload size={16} /> Importar desde Excel (template CARRION)
+            </button>
+            <button
+              onClick={() => setShowNewProduct(true)}
+              className="w-full py-2.5 rounded-xl border border-dashed border-app-line3 text-sm text-app-dim2 flex items-center justify-center gap-2 active:bg-app-panel"
+            >
+              <Plus size={16} /> ¿No existe en el catálogo? Crear producto nuevo
+            </button>
+          </div>
+        ) : showImportExcel ? (
+          <ImportarDesdeExcel
+            marcas={marcasPriorizadas}
+            departamentos={departamentos}
+            tipos={tipos}
+            origen={origen}
+            onCancel={() => setShowImportExcel(false)}
+            onImportar={(nuevosProductos, nuevosItems) => {
+              setProducts(prev => {
+                const map = new Map((prev || []).map(p => [(p.codigo || '').trim().toLowerCase(), p]));
+                const merged = [...(prev || [])];
+                nuevosProductos.forEach(n => {
+                  if (!map.has((n.codigo || '').trim().toLowerCase())) merged.push(n);
+                });
+                return merged;
+              });
+              setItems(prev => {
+                const key = it => `${it.productId}__${it.destino || 'H'}`;
+                const nuevosKeys = new Set(nuevosItems.map(key));
+                return [...(prev || []).filter(it => !nuevosKeys.has(key(it))), ...nuevosItems];
+              });
+              setShowImportExcel(false);
+            }}
+          />
         ) : (
           <div className="mt-2">
             <ProductForm
