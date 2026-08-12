@@ -4231,7 +4231,8 @@ function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], orige
             marca: String(r['Marca'] || r['marca'] || '').trim(),
             departamento: String(r['Departamento'] || r['departamento'] || '').trim(),
             tipo: String(r['Tipo'] || r['tipo'] || '').trim(),
-            cantidad: Math.max(0, parseInt(String(r['Cantidad'] || r['cantidad'] || '0')) || 0),
+            cantidadH: Math.max(0, parseInt(String(r['Cant. Honduras'] || r['Cantidad'] || r['cantidad'] || '0')) || 0),
+            cantidadG: Math.max(0, parseInt(String(r['Cant. Afiliada'] || '0')) || 0),
             precioUSD: Math.max(0, parseFloat(String(r['Precio USD'] || r['precio'] || '0').replace(',', '.')) || 0),
             ciudad: String(r['Ciudad'] || r['ciudad'] || '').trim(),
             descFinal: '',
@@ -4310,23 +4311,30 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         tallas: [], variantes: [], foto: null, fotos: [],
       };
       nuevosProductos.push(producto);
-      if (f.cantidad > 0) {
-        nuevosItems.push({
-          productId: id, codigo: f.codigo, descripcion: desc,
-          destino: 'H', origen: origen?.id || '',
-          tipo: f.tipo, subtipo: '', departamento: f.departamento,
-          marca: f.marca, ciudad: f.ciudad, fabrica: '',
-          costoMonto: f.precioUSD, costoMoneda: 'USD',
-          ventaLempiras: null, foto: null, fotos: [],
-          variantes: [{ talla: 'Única', cantidad: f.cantidad, color: '' }],
-        });
+
+      // Un item por destino con cantidad > 0 (Honduras = H, Afiliada = G)
+      const base = {
+        productId: id, codigo: f.codigo, descripcion: desc,
+        origen: origen?.id || '',
+        tipo: f.tipo, subtipo: '', departamento: f.departamento,
+        marca: f.marca, ciudad: f.ciudad, fabrica: '',
+        costoMonto: f.precioUSD, costoMoneda: 'USD',
+        ventaLempiras: null, foto: null, fotos: [],
+      };
+      if (f.cantidadH > 0) {
+        nuevosItems.push({ ...base, destino: 'H', variantes: [{ talla: 'Única', cantidad: f.cantidadH, color: '' }] });
+      }
+      if (f.cantidadG > 0) {
+        nuevosItems.push({ ...base, destino: 'G', variantes: [{ talla: 'Única', cantidad: f.cantidadG, color: '' }] });
       }
     });
     onImportar(nuevosProductos, nuevosItems);
   };
 
-  const totalUSD = filas.reduce((s, f) => s + f.precioUSD * f.cantidad, 0);
-  const totalPzs = filas.reduce((s, f) => s + f.cantidad, 0);
+  const totalPzsH = filas.reduce((s, f) => s + f.cantidadH, 0);
+  const totalPzsG = filas.reduce((s, f) => s + f.cantidadG, 0);
+  const totalPzs = totalPzsH + totalPzsG;
+  const totalUSD = filas.reduce((s, f) => s + f.precioUSD * (f.cantidadH + f.cantidadG), 0);
 
   return (
     <div className="mt-2 rounded-xl border border-app-line bg-app-panel p-4 flex flex-col gap-3">
@@ -4356,9 +4364,11 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
       {/* Paso 2: Revisar filas */}
       {filas.length > 0 && (
         <>
-          <div className="flex items-center gap-2 text-xs text-app-dim2">
+          <div className="flex items-center gap-2 text-xs text-app-dim2 flex-wrap">
             <span className="text-green-400 font-semibold">{filas.length} filas</span>
-            <span>·</span><span>{totalPzs} piezas</span>
+            <span>·</span><span>🇭🇳 {totalPzsH} pzs</span>
+            <span>·</span><span>🏬 {totalPzsG} pzs</span>
+            <span>·</span><span>{totalPzs} total</span>
             <span>·</span><span>${totalUSD.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
             <button onClick={() => { setFilas([]); setEstandarizado(false); }} className="ml-auto text-app-dim3 hover:text-red-400 text-xs">Cambiar archivo</button>
           </div>
@@ -4368,7 +4378,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
             <table className="w-full text-xs">
               <thead className="bg-app-bg sticky top-0">
                 <tr>
-                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','Cant','USD'].map(h => (
+                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','🇭🇳','🏬','USD'].map(h => (
                     <th key={h} className="px-2 py-1.5 text-left text-app-dim2 font-medium whitespace-nowrap border-b border-app-line">{h}</th>
                   ))}
                 </tr>
@@ -4392,7 +4402,8 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
                     <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.marca}</td>
                     <td className="px-2 py-1.5 text-app-dim whitespace-nowrap max-w-[100px] truncate">{f.departamento}</td>
                     <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.tipo}</td>
-                    <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidad}</td>
+                    <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidadH || '—'}</td>
+                    <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidadG || '—'}</td>
                     <td className="px-2 py-1.5 text-app-text text-right">{f.precioUSD.toFixed(2)}</td>
                   </tr>
                 ))}
