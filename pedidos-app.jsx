@@ -1112,6 +1112,30 @@ function sugerirPreciosVenta(costoMonto, costoMoneda) {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+// ============================================================
+// UNIDAD DE COMPRA POR PROVEEDOR
+// Algunos proveedores cotizan y piden por pieza; otros por docena.
+// Se define UNA vez en el proveedor y aplica a todos sus pedidos.
+// Los datos se guardan tal cual los ingresó el comprador (en la
+// unidad del proveedor) y el sistema muestra ambas equivalencias.
+// ============================================================
+const PIEZAS_POR_DOCENA = 12;
+
+const UNIDADES_COMPRA = [
+  { id: 'unidad', label: 'Por unidad', labelCorto: 'Por unidad', singular: 'pieza', plural: 'pzs', factor: 1 },
+  { id: 'docena', label: 'Por docena', labelCorto: 'Por docena (12 pzs)', singular: 'docena', plural: 'dz', factor: PIEZAS_POR_DOCENA },
+];
+
+// Devuelve la definición de unidad de un proveedor (por defecto: unidad)
+const unidadCompraDe = (proveedor) =>
+  UNIDADES_COMPRA.find((u) => u.id === (proveedor?.unidadCompra || 'unidad')) || UNIDADES_COMPRA[0];
+
+// Convierte la cantidad ingresada a piezas reales
+const aPiezas = (cantidad, unidad) => (Number(cantidad) || 0) * (unidad?.factor || 1);
+
+// Convierte el precio ingresado a costo por pieza
+const aCostoUnitario = (precio, unidad) => (Number(precio) || 0) / (unidad?.factor || 1);
+
 // Correlativo de pedido por origen y año: CN-26-0001, US-26-0001, PA-26-0001
 // Reinicia numeración cada año.
 const PREFIJO_ORIGEN = { china: 'CN', usa: 'US', panama: 'PA', honduras: 'HO' };
@@ -4201,7 +4225,11 @@ function TotalesConversion({ totals, tasaCambio, setTasaCambio, label = 'Total e
 // ============================================================
 // IMPORTAR DESDE EXCEL — Modal para cargar pedidos desde template
 // ============================================================
-function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, onImportar, onCancel }) {
+function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, proveedorActivo = null, onImportar, onCancel }) {
+  // La unidad del proveedor determina si las cantidades y el precio del Excel
+  // vienen por pieza o por docena.
+  const unidad = unidadCompraDe(proveedorActivo);
+  const esDocena = unidad.id === 'docena';
   const [filas, setFilas] = useState([]);
   const [procesando, setProcesando] = useState(false);
   const [estandarizado, setEstandarizado] = useState(false);
@@ -4307,6 +4335,10 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         tipo: f.tipo, subtipo: '', departamento: f.departamento,
         marca: f.marca, ciudad: f.ciudad, fabrica: '',
         costoMonto: f.precioUSD, costoMoneda: 'USD',
+        unidadCompra: unidad.id,
+        piezasPorUnidad: unidad.factor,
+        costoUnitario: aCostoUnitario(f.precioUSD, unidad),
+        piezasTotales: aPiezas(f.cantidadH + f.cantidadG, unidad),
         origen: origen?.id || '', medida: 'simple',
         tallas: [], variantes: [], foto: null, fotos: [],
       };
@@ -4319,6 +4351,9 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         tipo: f.tipo, subtipo: '', departamento: f.departamento,
         marca: f.marca, ciudad: f.ciudad, fabrica: '',
         costoMonto: f.precioUSD, costoMoneda: 'USD',
+        unidadCompra: unidad.id,
+        piezasPorUnidad: unidad.factor,
+        costoUnitario: aCostoUnitario(f.precioUSD, unidad),
         ventaLempiras: null, foto: null, fotos: [],
       };
       if (f.cantidadH > 0) {
@@ -4345,6 +4380,17 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         <button onClick={onCancel} className="text-app-dim3 hover:text-app-text"><X size={16} /></button>
       </div>
 
+      {proveedorActivo && (
+        <div className={`text-xs rounded-lg px-3 py-2 ${
+          esDocena ? 'bg-app-gold/15 text-app-gold' : 'bg-app-line/40 text-app-dim2'
+        }`}>
+          {proveedorActivo.nombre} cotiza <strong>{unidad.label.toLowerCase()}</strong>
+          {esDocena
+            ? ' — las cantidades y el precio del Excel se leen en docenas (12 piezas c/u).'
+            : ' — las cantidades y el precio del Excel se leen por pieza.'}
+        </div>
+      )}
+
       {/* Paso 1: Subir archivo */}
       {filas.length === 0 && (
         <div>
@@ -4366,9 +4412,10 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         <>
           <div className="flex items-center gap-2 text-xs text-app-dim2 flex-wrap">
             <span className="text-green-400 font-semibold">{filas.length} filas</span>
-            <span>·</span><span>🇭🇳 {totalPzsH} pzs</span>
-            <span>·</span><span>🏬 {totalPzsG} pzs</span>
-            <span>·</span><span>{totalPzs} total</span>
+            <span>·</span><span>🇭🇳 {totalPzsH} {unidad.plural}</span>
+            <span>·</span><span>🏬 {totalPzsG} {unidad.plural}</span>
+            <span>·</span><span>{totalPzs} {unidad.plural} total</span>
+            {esDocena && <><span>·</span><span className="text-app-gold">{aPiezas(totalPzs, unidad)} pzs</span></>}
             <span>·</span><span>${totalUSD.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</span>
             <button onClick={() => { setFilas([]); setEstandarizado(false); }} className="ml-auto text-app-dim3 hover:text-red-400 text-xs">Cambiar archivo</button>
           </div>
@@ -4854,6 +4901,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
             departamentos={departamentos}
             tipos={tipos}
             origen={origen}
+            proveedorActivo={suppliers.find((s) => s.id === supplierId) || null}
             onCancel={() => setShowImportExcel(false)}
             onImportar={(nuevosProductos, nuevosItems) => {
               setProducts(prev => {
@@ -4886,6 +4934,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
               factores={factores}
               tasaCambio={tasaCambio}
               origen={origen}
+              proveedorActivo={suppliers.find((s) => s.id === supplierId) || null}
               pedidoMode={true}
               usuarioActivoNombre={usuarioActivoNombre}
               usuarioActivoPrefijo={usuarioActivoPrefijo}
@@ -5935,7 +5984,10 @@ function SearchableSelect({ id, value, onChange, options, placeholder, openId, s
 }
 
 // ---------- Formulario de producto (reutilizable: catálogo y pedido) ----------
-function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], ciudadPorDefecto = '', onSetCiudadPorDefecto, fabricas = [], factores, tasaCambio, onSave, onCancel, onUpdateTipos, onCreateMarca, onCreateFabrica, onCreateCiudad, origen, pedidoMode = false, initialCodigo = '', usuarioActivoNombre = '', usuarioActivoPrefijo = '', numeroInicioCorrelativo = '', title = 'Nuevo producto' }) {
+function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], ciudadPorDefecto = '', onSetCiudadPorDefecto, fabricas = [], factores, tasaCambio, onSave, onCancel, onUpdateTipos, onCreateMarca, onCreateFabrica, onCreateCiudad, origen, proveedorActivo = null, pedidoMode = false, initialCodigo = '', usuarioActivoNombre = '', usuarioActivoPrefijo = '', numeroInicioCorrelativo = '', title = 'Nuevo producto' }) {
+  // Unidad en la que cotiza y pide este proveedor (por unidad o por docena)
+  const unidad = unidadCompraDe(proveedorActivo);
+  const esDocena = unidad.id === 'docena';
   const monedaOrigen = origen?.id === 'china' ? 'RMB' : (origen?.id === 'honduras' ? 'HNL' : 'USD');
   const [form, setForm] = useState({
     ...emptyForm(),
@@ -6111,6 +6163,12 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         fabrica: (form.fabrica || '').trim(),
         colores: esUno ? [colorOrColores] : colorOrColores,
         variantes,
+        // Se guarda TAL CUAL lo ingresó el comprador, en la unidad del proveedor.
+        unidadCompra: unidad.id,
+        piezasPorUnidad: unidad.factor,
+        // Equivalencias calculadas, para reportes y comparaciones entre proveedores
+        costoUnitario: aCostoUnitario(form.costoMonto, unidad),
+        piezasTotales: (variantes || []).reduce((s, v) => s + aPiezas(v.cantidad, unidad), 0),
         costoMonto: parseFloat(form.costoMonto),
         costoMoneda: form.costoMoneda,
         ventaLempiras: parseFloat(form.ventaLempiras),
@@ -6161,9 +6219,11 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
       // Cambiar automáticamente al otro destino para agilizar la captura
       const otroDestino = destinoPedido === 'H' ? 'G' : 'H';
       setDestinoPedido(otroDestino);
-      const totalPzs = nuevos.reduce((s, p) => s + (p.variantes || []).reduce((a, v) => a + (v.cantidad || 0), 0), 0);
+      const totalIngresado = nuevos.reduce((s, p) => s + (p.variantes || []).reduce((a, v) => a + (v.cantidad || 0), 0), 0);
+      const totalPzs = aPiezas(totalIngresado, unidad);
+      const detalle = esDocena ? `${totalIngresado} dz = ${totalPzs} pzs` : `${totalPzs} pzs`;
       const emojiPrev = destinoPedido === 'H' ? '🇭🇳' : '🇬🇹';
-      setFeedbackPedidoMode(`✓ ${emojiPrev} Agregado (${totalPzs} pzs). Ahora captura ${otroDestino === 'H' ? '🇭🇳' : '🇬🇹'}`);
+      setFeedbackPedidoMode(`✓ ${emojiPrev} Agregado (${detalle}). Ahora captura ${otroDestino === 'H' ? '🇭🇳' : '🇬🇹'}`);
       if (navigator.vibrate) navigator.vibrate(40);
     }
   };
@@ -6455,7 +6515,9 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         <div className="bg-app-bg border border-app-line rounded-xl px-3 py-2.5">
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs uppercase tracking-wide text-app-dim2">
-              {pedidoMode ? 'Cantidad del pedido por talla' : 'Tallas disponibles'}
+              {pedidoMode
+                ? `Cantidad del pedido por talla${esDocena ? ' (en docenas)' : ''}`
+                : 'Tallas disponibles'}
             </label>
             <button
               type="button"
@@ -6493,7 +6555,14 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
                       onChange={(e) => setQtySinTalla((prev) => ({ ...prev, [color]: e.target.value }))}
                       className="w-20 bg-app-panel border border-app-line rounded-lg px-2 py-1.5 text-sm text-center"
                     />
-                    <span className="text-xs text-app-dim2">pzs</span>
+                    <span className="text-xs text-app-dim2 w-16">
+                      {unidad.plural}
+                      {esDocena && Number(qtySinTalla[color]) > 0 && (
+                        <span className="block text-app-dim3">
+                          = {aPiezas(qtySinTalla[color], unidad)} pzs
+                        </span>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -6544,11 +6613,20 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
 
       <div>
         <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 flex items-center justify-between">
-          <span>Precio de costo <span className="text-app-red">*</span></span>
+          <span>
+            Precio de costo {esDocena ? 'por docena' : 'por unidad'} <span className="text-app-red">*</span>
+          </span>
+          {pedidoMode && proveedorActivo && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+              esDocena ? 'bg-app-gold/20 text-app-gold' : 'bg-app-line text-app-dim2'
+            }`}>
+              {unidad.labelCorto}
+            </span>
+          )}
         </label>
         <div className="flex gap-2">
           <input
-            placeholder="Precio de costo"
+            placeholder={esDocena ? 'Precio por docena' : 'Precio de costo'}
             type="number"
             value={form.costoMonto}
             onChange={(e) => setForm({ ...form, costoMonto: e.target.value })}
@@ -6562,6 +6640,11 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
             {MONEDAS_COSTO.map((m) => <option key={m}>{m}</option>)}
           </select>
         </div>
+        {esDocena && Number(form.costoMonto) > 0 && (
+          <p className="text-xs text-app-dim3 mt-1">
+            Equivale a {aCostoUnitario(form.costoMonto, unidad).toFixed(4)} {form.costoMoneda} por pieza
+          </p>
+        )}
       </div>
 
       {/* Niki en USD (solo China) — mostrar arriba del costo bodega */}
@@ -9718,7 +9801,7 @@ function Config({ departamentos = [], setDepartamentos, tipos = [], setTipos, ma
 // ---------- Proveedores ----------
 function Proveedores({ suppliers = [], setSuppliers, origen, puedoBorrar = true }) {
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ nombre: '', contacto: '', email: '', telefono: '' });
+  const [form, setForm] = useState({ nombre: '', contacto: '', email: '', telefono: '', unidadCompra: 'unidad' });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
 
@@ -9734,13 +9817,13 @@ function Proveedores({ suppliers = [], setSuppliers, origen, puedoBorrar = true 
   const addSupplier = () => {
     if (!form.nombre) return;
     setSuppliers([...suppliers, { ...form, id: uid(), origen: origen?.id || '' }]);
-    setForm({ nombre: '', contacto: '', email: '', telefono: '' });
+    setForm({ nombre: '', contacto: '', email: '', telefono: '', unidadCompra: 'unidad' });
     setShowForm(false);
   };
 
   const startEdit = (s) => {
     setEditingId(s.id);
-    setEditForm({ nombre: s.nombre, contacto: s.contacto, email: s.email, telefono: s.telefono });
+    setEditForm({ nombre: s.nombre, contacto: s.contacto, email: s.email, telefono: s.telefono, unidadCompra: s.unidadCompra || 'unidad' });
   };
 
   const saveEdit = (id) => {
@@ -9944,6 +10027,28 @@ function Proveedores({ suppliers = [], setSuppliers, origen, puedoBorrar = true 
           <input placeholder="Persona de contacto" value={form.contacto} onChange={(e) => setForm({ ...form, contacto: e.target.value })} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
           <input placeholder="Correo" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
           <input placeholder="Teléfono" value={form.telefono} onChange={(e) => setForm({ ...form, telefono: e.target.value })} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
+          <div>
+            <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 block">Unidad de compra</label>
+            <div className="grid grid-cols-2 gap-2">
+              {UNIDADES_COMPRA.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => setForm({ ...form, unidadCompra: u.id })}
+                  className={`py-2 rounded-lg text-sm font-medium border ${
+                    (form.unidadCompra || 'unidad') === u.id
+                      ? 'bg-app-gold text-app-bg border-app-gold'
+                      : 'border-app-line text-app-dim2'
+                  }`}
+                >
+                  {u.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-app-dim3 mt-1">
+              Define cómo cotiza y pide este proveedor: por pieza o por docena (12 piezas).
+            </p>
+          </div>
           <button onClick={addSupplier} className="w-full py-2.5 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">Guardar proveedor</button>
         </div>
       )}
@@ -9966,6 +10071,25 @@ function Proveedores({ suppliers = [], setSuppliers, origen, puedoBorrar = true 
                 <input placeholder="Persona de contacto" value={editForm.contacto} onChange={(e) => setEditForm({ ...editForm, contacto: e.target.value })} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
                 <input placeholder="Correo" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
                 <input placeholder="Teléfono" value={editForm.telefono} onChange={(e) => setEditForm({ ...editForm, telefono: e.target.value })} className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm" />
+                <div>
+                  <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 block">Unidad de compra</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {UNIDADES_COMPRA.map((u) => (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => setEditForm({ ...editForm, unidadCompra: u.id })}
+                        className={`py-2 rounded-lg text-sm font-medium border ${
+                          (editForm.unidadCompra || 'unidad') === u.id
+                            ? 'bg-app-gold text-app-bg border-app-gold'
+                            : 'border-app-line text-app-dim2'
+                        }`}
+                      >
+                        {u.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="flex gap-2 pt-1">
                   <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-lg border border-app-line text-sm text-app-dim2">Cancelar</button>
                   <button onClick={() => saveEdit(s.id)} className="flex-1 py-2 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">Guardar</button>
@@ -9978,6 +10102,13 @@ function Proveedores({ suppliers = [], setSuppliers, origen, puedoBorrar = true 
                   {s.contacto && <p className="text-xs text-app-dim truncate">{s.contacto}</p>}
                   {s.email && <p className="text-xs text-app-dim truncate">{s.email}</p>}
                   {s.telefono && <p className="text-xs text-app-dim">{s.telefono}</p>}
+                  <span className={`inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    (s.unidadCompra || 'unidad') === 'docena'
+                      ? 'bg-app-gold/20 text-app-gold'
+                      : 'bg-app-line text-app-dim2'
+                  }`}>
+                    {unidadCompraDe(s).labelCorto}
+                  </span>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <button onClick={() => startEdit(s)} className="text-app-sky active:opacity-70">
