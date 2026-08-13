@@ -7186,16 +7186,18 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         );
       })()}
 
-      {/* Costo puesto en bodega (Lempiras) */}
+      {/* Costo puesto en bodega (Lempiras) — siempre POR PIEZA.
+          Si el proveedor cotiza por docena, primero se divide entre 12. */}
       {(() => {
-        const bodega = costoBodegaHNL(form.costoMonto, form.costoMoneda, origen?.id, factores, tasaCambio?.rmbUsd, factores?.nikiPct);
+        const costoPorPieza = aCostoUnitario(form.costoMonto, unidad);
+        const bodega = costoBodegaHNL(costoPorPieza, form.costoMoneda, origen?.id, factores, tasaCambio?.rmbUsd, factores?.nikiPct);
         if (!bodega) return null;
         const factorPais = factores?.[origen?.id];
         return (
           <div className="bg-app-blue border border-app-line2 rounded-xl px-3 py-2.5">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs uppercase tracking-wide text-app-dim2">Costo puesto en bodega</p>
+                <p className="text-xs uppercase tracking-wide text-app-dim2">Costo puesto en bodega (por pieza)</p>
                 <p className="text-lg font-bold text-app-sky mt-0.5">{fmtLempiras(bodega)}</p>
               </div>
               <div className="text-right">
@@ -7203,6 +7205,12 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
                 <p className="text-sm font-semibold text-app-white">× {factorPais}</p>
               </div>
             </div>
+            {esDocena && (
+              <p className="text-xs text-app-gold mt-1">
+                Calculado sobre {costoPorPieza.toFixed(4)} {form.costoMoneda} por pieza
+                ({Number(form.costoMonto).toFixed(2)} ÷ {PIEZAS_POR_DOCENA})
+              </p>
+            )}
             <p className="text-xs text-app-dim2 mt-1">
               Incluye flete, seguro, impuestos y tasa USD→HNL.
             </p>
@@ -7211,13 +7219,14 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
       })()}
 
       {(() => {
-        const bodega = costoBodegaHNL(form.costoMonto, form.costoMoneda, origen?.id, factores, tasaCambio?.rmbUsd, factores?.nikiPct);
+        // La venta también se calcula por pieza, nunca sobre el precio de la docena
+        const bodega = costoBodegaHNL(aCostoUnitario(form.costoMonto, unidad), form.costoMoneda, origen?.id, factores, tasaCambio?.rmbUsd, factores?.nikiPct);
         const sugeridos = sugerirPreciosVentaHNL(bodega, origen?.id);
         if (sugeridos.length === 0) return null;
         return (
           <div>
             <p className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5">
-              Venta sugerida (margen + IVA)
+              Venta sugerida por pieza (margen + IVA)
             </p>
             <div className="flex flex-wrap gap-1.5">
               {sugeridos.map(({ margen, etiqueta, precio }) => (
