@@ -4332,7 +4332,7 @@ function TotalesConversion({ totals, tasaCambio, setTasaCambio, label = 'Total e
 // ============================================================
 // IMPORTAR DESDE EXCEL — Modal para cargar pedidos desde template
 // ============================================================
-function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, proveedorActivo = null, onImportar, onCancel }) {
+function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, proveedorActivo = null, onRegistrarSubtipos, onImportar, onCancel }) {
   // La unidad del proveedor determina si las cantidades y el precio del Excel
   // vienen por pieza o por docena.
   const unidad = unidadCompraDe(proveedorActivo);
@@ -4366,6 +4366,7 @@ function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], orige
             marca: String(r['Marca'] || r['marca'] || '').trim(),
             departamento: String(r['Departamento'] || r['departamento'] || '').trim(),
             tipo: String(r['Tipo'] || r['tipo'] || '').trim(),
+            subtipo: String(r['Subtipo'] || r['subtipo'] || '').trim(),
             cantidadH: Math.max(0, parseInt(String(r['Cant. Honduras'] || r['Cantidad'] || r['cantidad'] || '0')) || 0),
             cantidadG: Math.max(0, parseInt(String(r['Cant. Afiliada'] || '0')) || 0),
             precioUSD: Math.max(0, parseFloat(String(r['Precio USD'] || r['precio'] || '0').replace(',', '.')) || 0),
@@ -4388,7 +4389,7 @@ function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], orige
     setErrorMsg('');
     try {
       const lista = filas.map((f, i) =>
-        `${i + 1}. Código: ${f.codigo} | Descripción proveedor: "${f.descProveedor}" | Marca: ${f.marca} | Departamento: ${f.departamento} | Tipo: ${f.tipo}`
+        `${i + 1}. Código: ${f.codigo} | Descripción proveedor: "${f.descProveedor}" | Marca: ${f.marca} | Departamento: ${f.departamento} | Tipo: ${f.tipo}${f.subtipo ? ` | Subtipo: ${f.subtipo}` : ''}`
       ).join('\n');
 
       const prompt = `Eres un estandarizador de descripciones de productos para el catálogo de Tiendas Carrion, Honduras.
@@ -4431,6 +4432,16 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
     setFilas(prev => prev.map(f => f._id === id ? { ...f, descFinal: valor } : f));
   };
 
+  // ¿Este subtipo todavía no existe en el catálogo del tipo?
+  const subtipoEsNuevo = (f) => {
+    if (!f.subtipo || !f.tipo) return false;
+    const t = tipos.find((x) => x.nombre === f.tipo);
+    return !(t?.subtipos || []).some((s) => s.toLowerCase() === f.subtipo.toLowerCase());
+  };
+  const subtiposNuevos = [...new Set(
+    filas.filter(subtipoEsNuevo).map((f) => `${f.tipo} → ${f.subtipo}`)
+  )];
+
   const confirmarImportacion = () => {
     const nuevosProductos = [];
     const nuevosItems = [];
@@ -4439,7 +4450,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
       const id = uid();
       const producto = {
         id, codigo: f.codigo, descripcion: desc,
-        tipo: f.tipo, subtipo: '', departamento: f.departamento,
+        tipo: f.tipo, subtipo: f.subtipo, departamento: f.departamento,
         marca: f.marca, ciudad: f.ciudad, fabrica: '',
         costoMonto: f.precioUSD, costoMoneda: 'USD',
         unidadCompra: unidad.id,
@@ -4455,7 +4466,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
       const base = {
         productId: id, codigo: f.codigo, descripcion: desc,
         origen: origen?.id || '',
-        tipo: f.tipo, subtipo: '', departamento: f.departamento,
+        tipo: f.tipo, subtipo: f.subtipo, departamento: f.departamento,
         marca: f.marca, ciudad: f.ciudad, fabrica: '',
         costoMonto: f.precioUSD, costoMoneda: 'USD',
         unidadCompra: unidad.id,
@@ -4470,6 +4481,14 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         nuevosItems.push({ ...base, destino: 'G', variantes: [{ talla: 'Única', cantidad: f.cantidadG, color: '' }] });
       }
     });
+    // Los subtipos escritos en el Excel que aún no existen se agregan al catálogo
+    // del tipo correspondiente, para que queden disponibles la próxima vez.
+    onRegistrarSubtipos?.(
+      filas
+        .filter((f) => f.subtipo && f.tipo)
+        .map((f) => ({ tipo: f.tipo, subtipo: f.subtipo }))
+    );
+
     onImportar(nuevosProductos, nuevosItems);
   };
 
@@ -4532,7 +4551,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
             <table className="w-full text-xs">
               <thead className="bg-app-bg sticky top-0">
                 <tr>
-                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','🇭🇳','🏬','USD'].map(h => (
+                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','Subtipo','🇭🇳','🏬','USD'].map(h => (
                     <th key={h} className="px-2 py-1.5 text-left text-app-dim2 font-medium whitespace-nowrap border-b border-app-line">{h}</th>
                   ))}
                 </tr>
@@ -4556,6 +4575,13 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
                     <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.marca}</td>
                     <td className="px-2 py-1.5 text-app-dim whitespace-nowrap max-w-[100px] truncate">{f.departamento}</td>
                     <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.tipo}</td>
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      {f.subtipo ? (
+                        <span className={subtipoEsNuevo(f) ? 'text-green-400' : 'text-app-dim'}>
+                          {f.subtipo}{subtipoEsNuevo(f) ? ' ✚' : ''}
+                        </span>
+                      ) : <span className="text-app-dim3">—</span>}
+                    </td>
                     <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidadH || '—'}</td>
                     <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidadG || '—'}</td>
                     <td className="px-2 py-1.5 text-app-text text-right">{f.precioUSD.toFixed(2)}</td>
@@ -4566,6 +4592,18 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
           </div>
 
           {errorMsg && <p className="text-xs text-red-400">{errorMsg}</p>}
+
+          {subtiposNuevos.length > 0 && (
+            <div className="text-xs bg-green-500/10 text-green-400 rounded-lg px-3 py-2">
+              <p className="font-medium mb-1">
+                ✚ {subtiposNuevos.length} subtipo{subtiposNuevos.length !== 1 ? 's' : ''} nuevo
+                {subtiposNuevos.length !== 1 ? 's' : ''} se guardará
+                {subtiposNuevos.length !== 1 ? 'n' : ''} en el catálogo:
+              </p>
+              <p className="text-app-dim2">{subtiposNuevos.slice(0, 6).join(' · ')}
+                {subtiposNuevos.length > 6 ? ` y ${subtiposNuevos.length - 6} más` : ''}</p>
+            </div>
+          )}
 
           {/* Botones */}
           <div className="flex gap-2">
@@ -5009,6 +5047,19 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
             tipos={tipos}
             origen={origen}
             proveedorActivo={suppliers.find((s) => s.id === supplierId) || null}
+            onRegistrarSubtipos={(pares) => {
+              if (!pares?.length) return;
+              setTipos((prev) => {
+                const copia = (prev || []).map((t) => ({ ...t, subtipos: [...(t.subtipos || [])] }));
+                pares.forEach(({ tipo, subtipo }) => {
+                  const t = copia.find((x) => x.nombre === tipo);
+                  if (!t) return;
+                  const yaEsta = t.subtipos.some((s) => s.toLowerCase() === subtipo.toLowerCase());
+                  if (!yaEsta) t.subtipos.push(subtipo);
+                });
+                return copia;
+              });
+            }}
             onCancel={() => setShowImportExcel(false)}
             onImportar={(nuevosProductos, nuevosItems) => {
               setProducts(prev => {
