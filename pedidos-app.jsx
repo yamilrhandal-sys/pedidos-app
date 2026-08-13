@@ -1147,6 +1147,184 @@ const aPiezas = (cantidad, unidad) => (Number(cantidad) || 0) * (unidad?.factor 
 // Convierte el precio ingresado a costo por pieza
 const aCostoUnitario = (precio, unidad) => (Number(precio) || 0) / (unidad?.factor || 1);
 
+// ============================================================
+// GENERAR TEMPLATE DE PEDIDO
+// Construye el Excel al vuelo con los catálogos vivos de la app,
+// para que las listas desplegables siempre estén al día.
+// ExcelJS se carga sólo cuando se pide (import dinámico).
+// ============================================================
+const CIUDADES_TEMPLATE = [
+  'Guangzhou', 'Ciudad de Panamá', 'Miami', 'New York',
+  'Los Angeles', 'San Pedro Sula', 'Tegucigalpa', 'Otro',
+];
+
+async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = [], ciudades = [], proveedor = null }) {
+  const ExcelJS = (await import('exceljs')).default;
+  const libro = new ExcelJS.Workbook();
+  libro.creator = 'pedidos-app CARRION';
+  libro.created = new Date();
+
+  const unidad = unidadCompraDe(proveedor);
+  const esDocena = unidad.id === 'docena';
+
+  const listaMarcas  = [...new Set(marcas.filter(Boolean))].sort();
+  const listaDeptos  = [...new Set(departamentos.filter(Boolean))].sort();
+  const listaTipos   = [...new Set((tipos || []).map((t) => t?.nombre).filter(Boolean))].sort();
+  const listaCiudades = [...new Set([...(ciudades || []), ...CIUDADES_TEMPLATE].filter(Boolean))];
+
+  // ---------- Hoja CATALOGOS (oculta, alimenta los desplegables) ----------
+  const hCat = libro.addWorksheet('CATALOGOS', { state: 'veryHidden' });
+  const columnas = [
+    { titulo: 'Marca', datos: listaMarcas },
+    { titulo: 'Departamento', datos: listaDeptos },
+    { titulo: 'Tipo', datos: listaTipos },
+    { titulo: 'Ciudad', datos: listaCiudades },
+  ];
+  columnas.forEach((c, i) => {
+    hCat.getCell(1, i + 1).value = c.titulo;
+    c.datos.forEach((v, j) => { hCat.getCell(j + 2, i + 1).value = v; });
+  });
+
+  // ---------- Hoja INSTRUCCIONES ----------
+  const hIns = libro.addWorksheet('INSTRUCCIONES');
+  hIns.getColumn(1).width = 90;
+  const lineas = [
+    ['TEMPLATE DE IMPORTACIÓN DE PEDIDOS — CARRION', true],
+    [`Generado el ${new Date().toLocaleDateString('es-HN')}`, false],
+    ['', false],
+    ['CÓMO USAR:', true],
+    ['1. Ve a la hoja "PEDIDO"', false],
+    ['2. Borra la fila de ejemplo (fila 2, en gris)', false],
+    ['3. Copia el código y la descripción del Excel de tu proveedor', false],
+    ['4. Selecciona Marca, Departamento, Tipo y Ciudad del menú desplegable', false],
+    ['   El Subtipo es texto libre y opcional (ej: Skinny, Slim, Straight)', false],
+    ['5. Llena Cant. Honduras, Cant. Afiliada y Precio (deja 0 si no aplica)', false],
+    ['6. Guarda el archivo y súbelo en pedidos-app → Nuevo Pedido → Importar Excel', false],
+    ['', false],
+    ['UNIDAD DE COMPRA — IMPORTANTE:', true],
+    [proveedor
+      ? `Este template se generó para ${proveedor.nombre}, que cotiza ${unidad.label.toLowerCase()}.`
+      : 'La unidad depende del proveedor configurado en la app.', false],
+    [esDocena
+      ? 'Las cantidades son DOCENAS y el precio es POR DOCENA (12 piezas cada una).'
+      : 'Las cantidades son PIEZAS y el precio es POR PIEZA.', false],
+    ['La app muestra la equivalencia en piezas antes de confirmar la importación.', false],
+    ['', false],
+    ['CATÁLOGOS INCLUIDOS EN ESTE ARCHIVO:', true],
+    [`• ${listaMarcas.length} marcas`, false],
+    [`• ${listaDeptos.length} departamentos`, false],
+    [`• ${listaTipos.length} tipos de producto`, false],
+    [`• ${listaCiudades.length} ciudades`, false],
+    ['', false],
+    ['Si escribes un valor que no está en la lista, Excel mostrará un error.', false],
+  ];
+  lineas.forEach(([texto, esTitulo], i) => {
+    const celda = hIns.getCell(i + 1, 1);
+    celda.value = texto;
+    celda.alignment = { wrapText: true, vertical: 'top' };
+    if (esTitulo && texto) {
+      celda.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      celda.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    } else {
+      celda.font = { size: 10 };
+    }
+  });
+
+  // ---------- Hoja PEDIDO ----------
+  const hPed = libro.addWorksheet('PEDIDO');
+  const encabezados = [
+    ['Código', 20], ['Descripción Proveedor', 42], ['Marca', 22], ['Departamento', 28],
+    ['Tipo', 22], ['Subtipo', 18],
+    [esDocena ? 'Cant. Honduras (dz)' : 'Cant. Honduras', 18],
+    [esDocena ? 'Cant. Afiliada (dz)' : 'Cant. Afiliada', 18],
+    [esDocena ? 'Precio USD (docena)' : 'Precio USD (unidad)', 20],
+    ['Ciudad', 22],
+  ];
+  encabezados.forEach(([titulo, ancho], i) => {
+    const celda = hPed.getCell(1, i + 1);
+    celda.value = titulo;
+    celda.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+    celda.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    celda.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    hPed.getColumn(i + 1).width = ancho;
+  });
+  hPed.getRow(1).height = 28;
+
+  // Fila de ejemplo
+  const ejemplo = [
+    'LV-501-BLU-32  ← EJEMPLO, BORRAR ESTA FILA',
+    'SLIM FIT DENIM STRETCH BLUE WASH 32',
+    listaMarcas.includes('LEVIS') ? 'LEVIS' : (listaMarcas[0] || ''),
+    listaDeptos.includes('ROPA DAMA') ? 'ROPA DAMA' : (listaDeptos[0] || ''),
+    listaTipos.includes('Jeans') ? 'Jeans' : (listaTipos[0] || ''),
+    'Skinny', 24, 12, 12.5,
+    listaCiudades[0] || 'Guangzhou',
+  ];
+  ejemplo.forEach((valor, i) => {
+    const celda = hPed.getCell(2, i + 1);
+    celda.value = valor;
+    celda.font = { italic: true, color: { argb: 'FF888888' }, size: 9 };
+    celda.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+  });
+
+  // Filas de captura con validaciones
+  const ultimaFila = 201;
+  const ref = (col, n) => `CATALOGOS!$${col}$2:$${col}$${n + 1}`;
+  const validaciones = {
+    C: { type: 'list', formulae: [ref('A', listaMarcas.length)],   error: 'Selecciona una marca de la lista', title: 'Marca inválida' },
+    D: { type: 'list', formulae: [ref('B', listaDeptos.length)],   error: 'Selecciona un departamento de la lista', title: 'Departamento inválido' },
+    E: { type: 'list', formulae: [ref('C', listaTipos.length)],    error: 'Selecciona un tipo de la lista', title: 'Tipo inválido' },
+    J: { type: 'list', formulae: [ref('D', listaCiudades.length)], error: 'Selecciona una ciudad de la lista', title: 'Ciudad inválida' },
+    G: { type: 'whole', operator: 'greaterThanOrEqual', formulae: [0], error: 'Ingresa un número entero (0 o más)', title: 'Cantidad inválida' },
+    H: { type: 'whole', operator: 'greaterThanOrEqual', formulae: [0], error: 'Ingresa un número entero (0 o más)', title: 'Cantidad inválida' },
+    I: { type: 'decimal', operator: 'greaterThan', formulae: [0], error: 'Ingresa un precio mayor a 0', title: 'Precio inválido' },
+  };
+
+  for (let fila = 3; fila <= ultimaFila; fila++) {
+    for (let col = 1; col <= 10; col++) {
+      const celda = hPed.getCell(fila, col);
+      celda.font = { size: 10 };
+      celda.border = {
+        top: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+        left: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+        bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+        right: { style: 'thin', color: { argb: 'FFCCCCCC' } },
+      };
+      if (fila % 2 === 0) {
+        celda.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7F7F7' } };
+      }
+      if (col === 7 || col === 8) celda.numFmt = '0';
+      if (col === 9) celda.numFmt = '#,##0.00';
+    }
+    Object.entries(validaciones).forEach(([letra, regla]) => {
+      hPed.getCell(`${letra}${fila}`).dataValidation = {
+        ...regla,
+        allowBlank: true,
+        showErrorMessage: true,
+        errorStyle: 'stop',
+        errorTitle: regla.title,
+      };
+    });
+  }
+
+  hPed.views = [{ state: 'frozen', ySplit: 2 }];
+
+  // ---------- Descargar ----------
+  const buffer = await libro.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const enlace = document.createElement('a');
+  const sufijo = proveedor ? `_${proveedor.nombre.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 20)}` : '';
+  enlace.href = url;
+  enlace.download = `template_pedido${sufijo}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(enlace);
+  enlace.click();
+  document.body.removeChild(enlace);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // Correlativo de pedido por origen y año: CN-26-0001, US-26-0001, PA-26-0001
 // Reinicia numeración cada año.
 const PREFIJO_ORIGEN = { china: 'CN', usa: 'US', panama: 'PA', honduras: 'HO' };
@@ -4650,6 +4828,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   const [draftPrecio, setDraftPrecio] = useState('');   // precio editable del producto expandido
   const [showNewProduct, setShowNewProduct] = useState(false);
   const [showImportExcel, setShowImportExcel] = useState(false);
+  const [generandoTemplate, setGenerandoTemplate] = useState(false);
   const [codigoInicio, setCodigoInicio] = useState(borrador?.codigoInicio || ''); // número de inicio del correlativo (solo China)
   const [embarcadorId, setEmbarcadorId] = useState(borrador?.embarcadorId || ''); // compañía de embarque (USA/Panamá)
   const [ciudadPorDefecto, setCiudadPorDefecto] = useState(borrador?.ciudadPorDefecto || ''); // ciudad elegida en el primer artículo
@@ -5027,12 +5206,38 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
 
         {!showNewProduct && !showImportExcel ? (
           <div className="mt-2 flex flex-col gap-1.5">
-            <button
-              onClick={() => setShowImportExcel(true)}
-              className="w-full py-2.5 rounded-xl border border-dashed border-amber-400/50 text-sm text-amber-400 flex items-center justify-center gap-2 active:bg-app-panel"
-            >
-              <Upload size={16} /> Importar desde Excel (template CARRION)
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => setShowImportExcel(true)}
+                className="flex-1 py-2.5 rounded-xl border border-dashed border-amber-400/50 text-sm text-amber-400 flex items-center justify-center gap-2 active:bg-app-panel"
+              >
+                <Upload size={16} /> Importar Excel
+              </button>
+              <button
+                onClick={async () => {
+                  setGenerandoTemplate(true);
+                  try {
+                    await generarTemplatePedido({
+                      marcas: marcasPriorizadas,
+                      departamentos,
+                      tipos,
+                      ciudades,
+                      proveedor: suppliers.find((s) => s.id === supplierId) || null,
+                    });
+                  } catch (err) {
+                    alert('No se pudo generar el template: ' + (err?.message || err));
+                  } finally {
+                    setGenerandoTemplate(false);
+                  }
+                }}
+                disabled={generandoTemplate}
+                title="Descarga el template con los catálogos actualizados"
+                className="px-3 py-2.5 rounded-xl border border-dashed border-app-line3 text-sm text-app-dim2 flex items-center justify-center gap-1.5 active:bg-app-panel disabled:opacity-50"
+              >
+                <FileDown size={16} />
+                {generandoTemplate ? 'Generando…' : 'Template'}
+              </button>
+            </div>
             <button
               onClick={() => setShowNewProduct(true)}
               className="w-full py-2.5 rounded-xl border border-dashed border-app-line3 text-sm text-app-dim2 flex items-center justify-center gap-2 active:bg-app-panel"
