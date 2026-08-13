@@ -4875,7 +4875,10 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
 
 function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, corridas = [], onRegistrarCorrida, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
-  const [supplierId, setSupplierId] = useState(borrador?.supplierId || suppliers[0]?.id || '');
+  // Arranca vacío a propósito: el comprador debe elegir el proveedor de forma
+  // consciente, porque de él dependen la unidad de compra y el template.
+  const [supplierId, setSupplierId] = useState(borrador?.supplierId || '');
+  const hayProveedor = Boolean(supplierId);
   const [items, setItems] = useState(borrador?.items || []);
   const [query, setQuery] = useState('');
   const [notas, setNotas] = useState(borrador?.notas || '');
@@ -5154,14 +5157,28 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   return (
     <div className="space-y-4">
       <div>
-        <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">Proveedor</label>
+        <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">
+          Proveedor <span className="text-app-red">*</span>
+        </label>
         <select
           value={supplierId}
           onChange={(e) => setSupplierId(e.target.value)}
-          className="w-full bg-app-panel border border-app-line rounded-xl px-3 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+          className={`w-full bg-app-panel border rounded-xl px-3 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 ${
+            hayProveedor ? 'border-app-line' : 'border-app-gold text-app-dim2'
+          }`}
         >
+          <option value="">— Selecciona un proveedor —</option>
           {suppliers.map((s) => <option key={s.id} value={s.id}>{s.nombre}</option>)}
         </select>
+        {hayProveedor && (() => {
+          const prov = suppliers.find((s) => s.id === supplierId);
+          const u = unidadCompraDe(prov);
+          return (
+            <p className="text-xs text-app-dim3 mt-1">
+              Cotiza {u.label.toLowerCase()}{u.id === 'docena' ? ' — 12 piezas por docena' : ''}
+            </p>
+          );
+        })()}
       </div>
 
       {/* Compañía de embarque — solo USA y Panamá */}
@@ -5247,6 +5264,15 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
         );
       })()}
 
+      {!hayProveedor ? (
+        <div className="rounded-xl border border-dashed border-app-gold/50 bg-app-panel px-4 py-6 text-center">
+          <Truck size={22} className="text-app-gold mx-auto mb-2" />
+          <p className="text-sm text-app-light font-medium">Selecciona un proveedor para continuar</p>
+          <p className="text-xs text-app-dim3 mt-1">
+            De él dependen la unidad de compra (unidad o docena) y el template de Excel.
+          </p>
+        </div>
+      ) : (
       <div>
         <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">Buscar producto</label>
         <div className="flex gap-2">
@@ -5483,6 +5509,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
           </div>
         )}
       </div>
+      )}
 
       {items.length > 0 && (
         <div>
