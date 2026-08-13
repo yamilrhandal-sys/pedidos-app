@@ -1159,7 +1159,7 @@ const CIUDADES_TEMPLATE = [
   'Los Angeles', 'San Pedro Sula', 'Tegucigalpa', 'Otro',
 ];
 
-async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = [], ciudades = [], proveedor = null }) {
+async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = [], ciudades = [], corridas = [], proveedor = null }) {
   const ExcelJS = (await import('exceljs')).default;
   const libro = new ExcelJS.Workbook();
   libro.creator = 'pedidos-app CARRION';
@@ -1172,6 +1172,10 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
   const listaDeptos  = [...new Set(departamentos.filter(Boolean))].sort();
   const listaTipos   = [...new Set((tipos || []).map((t) => t?.nombre).filter(Boolean))].sort();
   const listaCiudades = [...new Set([...(ciudades || []), ...CIUDADES_TEMPLATE].filter(Boolean))];
+  const deGrupos = (GRUPOS_TALLAS || [])
+    .filter((g) => (g.tallas || []).length > 1)
+    .map((g) => `${g.tallas[0]}-${g.tallas[g.tallas.length - 1]}`);
+  const listaCorridas = [...new Set([...(corridas || []), ...deGrupos].filter(Boolean))];
 
   // ---------- Hoja CATALOGOS (oculta, alimenta los desplegables) ----------
   const hCat = libro.addWorksheet('CATALOGOS', { state: 'veryHidden' });
@@ -1180,6 +1184,7 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
     { titulo: 'Departamento', datos: listaDeptos },
     { titulo: 'Tipo', datos: listaTipos },
     { titulo: 'Ciudad', datos: listaCiudades },
+    { titulo: 'Corrida', datos: listaCorridas },
   ];
   columnas.forEach((c, i) => {
     hCat.getCell(1, i + 1).value = c.titulo;
@@ -1199,6 +1204,7 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
     ['3. Copia el código y la descripción del Excel de tu proveedor', false],
     ['4. Selecciona Marca, Departamento, Tipo y Ciudad del menú desplegable', false],
     ['   El Subtipo es texto libre y opcional (ej: Skinny, Slim, Straight)', false],
+    ['   La Corrida indica el rango de tallas a pedir (ej: S-XL, 28-38). Opcional.', false],
     ['5. Llena Cant. Honduras, Cant. Afiliada y Precio (deja 0 si no aplica)', false],
     ['6. Guarda el archivo y súbelo en pedidos-app → Nuevo Pedido → Importar Excel', false],
     ['', false],
@@ -1216,6 +1222,7 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
     [`• ${listaDeptos.length} departamentos`, false],
     [`• ${listaTipos.length} tipos de producto`, false],
     [`• ${listaCiudades.length} ciudades`, false],
+    [`• ${listaCorridas.length} corridas de talla`, false],
     ['', false],
     ['Si escribes un valor que no está en la lista, Excel mostrará un error.', false],
   ];
@@ -1235,7 +1242,7 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
   const hPed = libro.addWorksheet('PEDIDO');
   const encabezados = [
     ['Código', 20], ['Descripción Proveedor', 42], ['Marca', 22], ['Departamento', 28],
-    ['Tipo', 22], ['Subtipo', 18],
+    ['Tipo', 22], ['Subtipo', 18], ['Corrida', 16],
     [esDocena ? 'Cant. Honduras (dz)' : 'Cant. Honduras', 18],
     [esDocena ? 'Cant. Afiliada (dz)' : 'Cant. Afiliada', 18],
     [esDocena ? 'Precio USD (docena)' : 'Precio USD (unidad)', 20],
@@ -1258,7 +1265,7 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
     listaMarcas.includes('LEVIS') ? 'LEVIS' : (listaMarcas[0] || ''),
     listaDeptos.includes('ROPA DAMA') ? 'ROPA DAMA' : (listaDeptos[0] || ''),
     listaTipos.includes('Jeans') ? 'Jeans' : (listaTipos[0] || ''),
-    'Skinny', 24, 12, 12.5,
+    'Skinny', listaCorridas[0] || 'S-XL', 24, 12, 12.5,
     listaCiudades[0] || 'Guangzhou',
   ];
   ejemplo.forEach((valor, i) => {
@@ -1275,14 +1282,17 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
     C: { type: 'list', formulae: [ref('A', listaMarcas.length)],   error: 'Selecciona una marca de la lista', title: 'Marca inválida' },
     D: { type: 'list', formulae: [ref('B', listaDeptos.length)],   error: 'Selecciona un departamento de la lista', title: 'Departamento inválido' },
     E: { type: 'list', formulae: [ref('C', listaTipos.length)],    error: 'Selecciona un tipo de la lista', title: 'Tipo inválido' },
-    J: { type: 'list', formulae: [ref('D', listaCiudades.length)], error: 'Selecciona una ciudad de la lista', title: 'Ciudad inválida' },
-    G: { type: 'whole', operator: 'greaterThanOrEqual', formulae: [0], error: 'Ingresa un número entero (0 o más)', title: 'Cantidad inválida' },
+    K: { type: 'list', formulae: [ref('D', listaCiudades.length)], error: 'Selecciona una ciudad de la lista', title: 'Ciudad inválida' },
+    // La corrida ofrece la lista como sugerencia pero deja escribir una nueva:
+    // por eso showErrorMessage va en false más abajo.
+    G: { type: 'list', formulae: [ref('E', listaCorridas.length)], error: '', title: '', libre: true },
     H: { type: 'whole', operator: 'greaterThanOrEqual', formulae: [0], error: 'Ingresa un número entero (0 o más)', title: 'Cantidad inválida' },
-    I: { type: 'decimal', operator: 'greaterThan', formulae: [0], error: 'Ingresa un precio mayor a 0', title: 'Precio inválido' },
+    I: { type: 'whole', operator: 'greaterThanOrEqual', formulae: [0], error: 'Ingresa un número entero (0 o más)', title: 'Cantidad inválida' },
+    J: { type: 'decimal', operator: 'greaterThan', formulae: [0], error: 'Ingresa un precio mayor a 0', title: 'Precio inválido' },
   };
 
   for (let fila = 3; fila <= ultimaFila; fila++) {
-    for (let col = 1; col <= 10; col++) {
+    for (let col = 1; col <= 11; col++) {
       const celda = hPed.getCell(fila, col);
       celda.font = { size: 10 };
       celda.border = {
@@ -1294,16 +1304,18 @@ async function generarTemplatePedido({ marcas = [], departamentos = [], tipos = 
       if (fila % 2 === 0) {
         celda.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7F7F7' } };
       }
-      if (col === 7 || col === 8) celda.numFmt = '0';
-      if (col === 9) celda.numFmt = '#,##0.00';
+      if (col === 8 || col === 9) celda.numFmt = '0';
+      if (col === 10) celda.numFmt = '#,##0.00';
     }
     Object.entries(validaciones).forEach(([letra, regla]) => {
+      const { libre, title, ...resto } = regla;
       hPed.getCell(`${letra}${fila}`).dataValidation = {
-        ...regla,
+        ...resto,
         allowBlank: true,
-        showErrorMessage: true,
-        errorStyle: 'stop',
-        errorTitle: regla.title,
+        // Si el campo es "libre" se muestra la lista pero no se bloquea
+        // escribir un valor que aún no existe (ej. una corrida nueva).
+        showErrorMessage: !libre,
+        ...(libre ? {} : { errorStyle: 'stop', errorTitle: title }),
       };
     });
   }
@@ -4567,7 +4579,7 @@ function TotalesConversion({ totals, tasaCambio, setTasaCambio, label = 'Total e
 // ============================================================
 // IMPORTAR DESDE EXCEL — Modal para cargar pedidos desde template
 // ============================================================
-function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, proveedorActivo = null, onRegistrarSubtipos, onImportar, onCancel }) {
+function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], origen, proveedorActivo = null, onRegistrarSubtipos, onRegistrarCorrida, onImportar, onCancel }) {
   // La unidad del proveedor determina si las cantidades y el precio del Excel
   // vienen por pieza o por docena.
   const unidad = unidadCompraDe(proveedorActivo);
@@ -4602,6 +4614,7 @@ function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], orige
             departamento: String(r['Departamento'] || r['departamento'] || '').trim(),
             tipo: String(r['Tipo'] || r['tipo'] || '').trim(),
             subtipo: String(r['Subtipo'] || r['subtipo'] || '').trim(),
+            corrida: String(r['Corrida'] || r['corrida'] || '').trim(),
             cantidadH: Math.max(0, parseInt(String(r['Cant. Honduras'] || r['Cantidad'] || r['cantidad'] || '0')) || 0),
             cantidadG: Math.max(0, parseInt(String(r['Cant. Afiliada'] || '0')) || 0),
             precioUSD: Math.max(0, parseFloat(String(r['Precio USD'] || r['precio'] || '0').replace(',', '.')) || 0),
@@ -4685,7 +4698,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
       const id = uid();
       const producto = {
         id, codigo: f.codigo, descripcion: desc,
-        tipo: f.tipo, subtipo: f.subtipo, departamento: f.departamento,
+        tipo: f.tipo, subtipo: f.subtipo, corrida: f.corrida, departamento: f.departamento,
         marca: f.marca, ciudad: f.ciudad, fabrica: '',
         costoMonto: f.precioUSD, costoMoneda: 'USD',
         unidadCompra: unidad.id,
@@ -4701,7 +4714,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
       const base = {
         productId: id, codigo: f.codigo, descripcion: desc,
         origen: origen?.id || '',
-        tipo: f.tipo, subtipo: f.subtipo, departamento: f.departamento,
+        tipo: f.tipo, subtipo: f.subtipo, corrida: f.corrida, departamento: f.departamento,
         marca: f.marca, ciudad: f.ciudad, fabrica: '',
         costoMonto: f.precioUSD, costoMoneda: 'USD',
         unidadCompra: unidad.id,
@@ -4723,6 +4736,10 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
         .filter((f) => f.subtipo && f.tipo)
         .map((f) => ({ tipo: f.tipo, subtipo: f.subtipo }))
     );
+
+    // Lo mismo con las corridas escritas en el Excel
+    [...new Set(filas.map((f) => f.corrida).filter(Boolean))]
+      .forEach((c) => onRegistrarCorrida?.(c));
 
     onImportar(nuevosProductos, nuevosItems);
   };
@@ -4786,7 +4803,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
             <table className="w-full text-xs">
               <thead className="bg-app-bg sticky top-0">
                 <tr>
-                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','Subtipo','🇭🇳','🏬','USD'].map(h => (
+                  {['Código','Descripción proveedor', estandarizado ? 'Descripción CARRION (editable)' : 'Descripción CARRION', 'Marca','Depto','Tipo','Subtipo','Corrida','🇭🇳','🏬','USD'].map(h => (
                     <th key={h} className="px-2 py-1.5 text-left text-app-dim2 font-medium whitespace-nowrap border-b border-app-line">{h}</th>
                   ))}
                 </tr>
@@ -4817,6 +4834,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
                         </span>
                       ) : <span className="text-app-dim3">—</span>}
                     </td>
+                    <td className="px-2 py-1.5 text-app-dim whitespace-nowrap">{f.corrida || '—'}</td>
                     <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidadH || '—'}</td>
                     <td className="px-2 py-1.5 text-app-text text-right font-semibold">{f.cantidadG || '—'}</td>
                     <td className="px-2 py-1.5 text-app-text text-right">{f.precioUSD.toFixed(2)}</td>
@@ -5308,6 +5326,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
                       departamentos,
                       tipos,
                       ciudades,
+                      corridas,
                       proveedor: suppliers.find((s) => s.id === supplierId) || null,
                     });
                   } catch (err) {
@@ -5338,6 +5357,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
             tipos={tipos}
             origen={origen}
             proveedorActivo={suppliers.find((s) => s.id === supplierId) || null}
+            onRegistrarCorrida={onRegistrarCorrida}
             onRegistrarSubtipos={(pares) => {
               if (!pares?.length) return;
               setTipos((prev) => {
