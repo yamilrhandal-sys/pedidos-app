@@ -658,6 +658,50 @@ async function borrarFoto(foto) {
 }
 
 // ------------------------------------------------------------
+// LLAMADA A CLAUDE
+// No se habla con api.anthropic.com desde el navegador: la clave
+// quedaría a la vista de cualquiera. Se pasa por /api/claude, que
+// corre en el servidor de Vercel, guarda la clave y comprueba que
+// quien llama tenga sesión iniciada.
+// ------------------------------------------------------------
+async function llamarClaude({ model, maxTokens = 1000, contenido }) {
+  // El token de sesión viaja para que el servidor confirme quién llama
+  let token = null;
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    token = data?.session?.access_token || null;
+  }
+  if (!token) {
+    throw new Error('Tu sesión expiró. Vuelve a iniciar sesión para usar esta función.');
+  }
+
+  const resp = await fetch('/api/claude', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: contenido }],
+    }),
+  });
+
+  let datos;
+  try {
+    datos = await resp.json();
+  } catch {
+    throw new Error('El servidor devolvió una respuesta ilegible.');
+  }
+
+  if (!resp.ok) {
+    throw new Error(datos?.error || 'Claude no pudo procesar la petición.');
+  }
+  return datos;
+}
+
+// ------------------------------------------------------------
 // AUDITORÍA — registra quién creó, editó o borró qué y cuándo.
 // Compara la lista anterior contra la nueva (por id) y escribe
 // una fila por cada elemento agregado, cambiado o quitado.
@@ -3009,12 +3053,11 @@ Si no encuentras un dato, usa null. No inventes nada.`;
         setError('Sube PDF o una foto/imagen de la proforma. Para Excel, expórtalo a PDF.');
         setPaso('subir'); return;
       }
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 3000, messages: [{ role: 'user', content: contenido }] }),
+      const data = await llamarClaude({
+        model: 'claude-haiku-4-5-20251001',
+        maxTokens: 3000,
+        contenido,
       });
-      const data = await resp.json();
       const texto = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
       const limpio = texto.replace(/```json|```/g, '').trim();
       let parsed;
@@ -4651,16 +4694,11 @@ ${lista}
 Responde ÚNICAMENTE con un JSON array de strings en el mismo orden, sin explicaciones ni formato extra.
 Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-XL"]`;
 
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 1000,
-          messages: [{ role: 'user', content: prompt }],
-        }),
+      const data = await llamarClaude({
+        model: 'claude-sonnet-4-6',
+        maxTokens: 1000,
+        contenido: prompt,
       });
-      const data = await resp.json();
       const texto = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
       const limpio = texto.replace(/```json|```/g, '').trim();
       const sugerencias = JSON.parse(limpio);
