@@ -166,6 +166,7 @@ const KEYS = {
   usuarios: 'pedidos:usuarios',
   borradores: 'pedidos:borradores',
   ordenesCompra: 'pedidos:ordenesCompra', // [{ numero, fecha, supplierId, lineas, totalFob, moneda, estado }]
+  corridas: 'pedidos:corridas', // ["S-XL", "28-38", ...] corridas de talla escritas por los compradores
 };
 const SESION_KEY = 'pedidos:sesion'; // storage PERSONAL: recuerda el usuario de este dispositivo
 const ULTIMO_USUARIO_KEY = 'pedidos:ultimo'; // storage PERSONAL: último usuario que entró (sobrevive a logout)
@@ -1372,6 +1373,7 @@ function CapturaCamara({ onUsarFoto, onCerrar }) {
   const [captura, setCaptura] = useState(null);   // { blob, url }
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
+  const [buscando, setBuscando] = useState(false);
 
   // Detiene cualquier stream activo (importante para liberar la cámara)
   const detenerStream = useCallback(() => {
@@ -1444,6 +1446,20 @@ function CapturaCamara({ onUsarFoto, onCerrar }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Vuelve a preguntar al sistema qué cámaras hay. Útil cuando el iPhone
+  // aparece unos segundos después de abrir el modal.
+  const rebuscarCamaras = useCallback(async () => {
+    setBuscando(true);
+    try {
+      const dispositivos = await navigator.mediaDevices.enumerateDevices();
+      setCamaras(dispositivos.filter((d) => d.kind === 'videoinput'));
+    } catch {
+      /* sin cambios si falla */
+    } finally {
+      setTimeout(() => setBuscando(false), 400);
+    }
+  }, []);
+
   // Libera el objeto URL de la vista previa al cambiarla o cerrar
   useEffect(() => () => { if (captura?.url) URL.revokeObjectURL(captura.url); }, [captura]);
 
@@ -1477,10 +1493,12 @@ function CapturaCamara({ onUsarFoto, onCerrar }) {
   const cerrar = () => { detenerStream(); onCerrar(); };
 
   // Nombre legible para cada cámara; marca el iPhone cuando se detecta
+  const esIphone = (d) => /iphone|continuity|continuidad/i.test(d?.label || '');
   const etiquetaCamara = (d, i) => {
     const base = d.label || `Cámara ${i + 1}`;
-    return /iphone|continuity/i.test(base) ? `📱 ${base}` : base;
+    return esIphone(d) ? `📱 ${base}` : base;
   };
+  const hayIphone = camaras.some(esIphone);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4">
@@ -1523,15 +1541,30 @@ function CapturaCamara({ onUsarFoto, onCerrar }) {
           )}
         </div>
 
-        {/* Selector de cámara: aquí aparece el iPhone si Continuity lo expone */}
-        {!captura && !error && camaras.length > 1 && (
+        {/* Selector de cámara: aquí aparece el iPhone si Continuity lo expone.
+            Se muestra siempre —aunque haya una sola— para poder ver qué detectó
+            el navegador y volver a buscar sin cerrar el modal. */}
+        {!captura && !error && (
           <div className="px-4 pt-3">
-            <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 block">Cámara</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs text-app-dim2 uppercase tracking-wide">
+                Cámara · {camaras.length} detectada{camaras.length !== 1 ? 's' : ''}
+              </label>
+              <button
+                type="button"
+                onClick={rebuscarCamaras}
+                disabled={buscando}
+                className="text-xs text-app-gold disabled:opacity-50"
+              >
+                {buscando ? 'Buscando…' : '↻ Buscar otra vez'}
+              </button>
+            </div>
             <select
               value={camaraId}
               onChange={(e) => { setCamaraId(e.target.value); iniciarCamara(e.target.value); }}
               className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm"
             >
+              {camaras.length === 0 && <option>Sin cámaras detectadas</option>}
               {camaras.map((d, i) => (
                 <option key={d.deviceId || i} value={d.deviceId}>{etiquetaCamara(d, i)}</option>
               ))}
@@ -1575,12 +1608,15 @@ function CapturaCamara({ onUsarFoto, onCerrar }) {
           )}
         </div>
 
-        {/* Ayuda para Cámara de Continuidad */}
-        {!captura && !error && (
-          <p className="px-4 pb-3 text-xs text-app-dim3 text-center">
-            ¿No aparece tu iPhone? Debe estar cerca, desbloqueado y con Wi‑Fi y Bluetooth activos.
-            Aparecerá solo en la lista de cámaras.
-          </p>
+        {/* Ayuda para Cámara de Continuidad: sólo cuando no se ve el iPhone */}
+        {!captura && !error && !hayIphone && (
+          <div className="px-4 pb-3 text-xs text-app-dim3 space-y-1">
+            <p className="text-app-dim2 font-medium">Tu iPhone no aparece en la lista. Revisa:</p>
+            <p>• Usa <strong>Safari</strong> — Chrome en Mac no siempre expone Cámara de Continuidad.</p>
+            <p>• El iPhone debe estar <strong>quieto, en horizontal y con la pantalla apagada o en inicio</strong>. Si lo tienes en la mano o con la cámara abierta, macOS no lo ofrece.</p>
+            <p>• Ambos con Wi‑Fi y Bluetooth activos y la misma cuenta de Apple.</p>
+            <p>• Acerca el iPhone y toca <strong>"Buscar otra vez"</strong>.</p>
+          </div>
         )}
       </div>
     </div>
@@ -1876,6 +1912,7 @@ function PedidosAppInterno() {
   const [marcasProveedores, setMarcasProveedores] = useState({}); // marca -> [supplierId]
   const [ciudades, setCiudades] = useLista([]);
   const [fabricas, setFabricas] = useLista([]);
+  const [corridas, setCorridas] = useLista([]);   // corridas de talla guardadas
   const [presupuestos, setPresupuestos] = useState({});
   const [usuarios, setUsuarios] = useLista([]);
   const [factores, setFactores] = useState({ china: 32, usa: 22, panama: 18, honduras: 1 });
@@ -1905,7 +1942,7 @@ function PedidosAppInterno() {
     // Si aún no hay sesión, esperamos: este efecto se repite cuando llega.
     if (SUPABASE_CONFIGURADO && !sesionAuth) return;
     (async () => {
-      const [p, s, o, d, t, mc, emp, embs, mcp, tc, ci, fa, pr, us, fac, bo, oc, sesion, modoGuardado, ultimoUsuario] = await Promise.all([
+      const [p, s, o, d, t, mc, emp, embs, mcp, tc, ci, fa, pr, us, fac, bo, oc, corr, sesion, modoGuardado, ultimoUsuario] = await Promise.all([
         loadShared(KEYS.products, seedProducts()),
         loadShared(KEYS.suppliers, seedSuppliers()),
         loadShared(KEYS.orders, []),
@@ -1923,6 +1960,7 @@ function PedidosAppInterno() {
         loadShared(KEYS.factores, { china: 32, usa: 22, panama: 18, honduras: 1 }),
         loadShared(KEYS.borradores, {}),
         loadShared(KEYS.ordenesCompra, []),
+        loadShared(KEYS.corridas, seedCorridas()),
         loadPersonal(SESION_KEY, null),
         loadPersonal(MODO_KEY, 'auto'),
         loadPersonal(ULTIMO_USUARIO_KEY, null),
@@ -1943,6 +1981,7 @@ function PedidosAppInterno() {
       setTasaCambio(tc);
       setCiudades(ci);
       setFabricas(fa);
+      setCorridas(arr(corr));
       setPresupuestos(pr && typeof pr === 'object' ? pr : {});
       const listaUsuarios = Array.isArray(us) ? us : [];
       setUsuarios(listaUsuarios);
@@ -2061,6 +2100,18 @@ function PedidosAppInterno() {
   const persistEmbarcadores = useCallback((next) => { setEmbarcadores(next); guardarConCola(KEYS.embarcadores, next); }, [guardarConCola]);
   const persistMarcasProveedores = useCallback((next) => { setMarcasProveedores(next); guardarConCola(KEYS.marcasProveedores, next); }, [guardarConCola]);
   const persistCiudades = useCallback((next) => { setCiudades(next); guardarConCola(KEYS.ciudades, next); }, [guardarConCola]);
+  // Agrega una corrida nueva al catálogo global si aún no existe
+  const registrarCorrida = useCallback((texto) => {
+    const limpio = (texto || '').trim();
+    if (!limpio) return;
+    setCorridas((prev) => {
+      const lista = Array.isArray(prev) ? prev : [];
+      if (lista.some((c) => c.toLowerCase() === limpio.toLowerCase())) return lista;
+      const next = [limpio, ...lista].slice(0, 60);   // las más recientes primero
+      guardarConCola(KEYS.corridas, next);
+      return next;
+    });
+  }, [guardarConCola, setCorridas]);
   const persistFabricas = useCallback((next) => { setFabricas(next); guardarConCola(KEYS.fabricas, next); }, [guardarConCola]);
   const persistPresupuestos = useCallback((next) => { setPresupuestos(next); guardarConCola(KEYS.presupuestos, next); }, [guardarConCola]);
   const persistUsuarios = useCallback((next) => {
@@ -2404,6 +2455,8 @@ function PedidosAppInterno() {
             suppliers={suppliersOrigen}
             tasaCambio={tasaCambio}
             setTasaCambio={persistTasaCambio}
+            corridas={corridas}
+            onRegistrarCorrida={registrarCorrida}
             origen={origenActivo}
             borrador={borradorVisible}
             onGuardarBorrador={(datos) => guardarBorrador(origenActivo.id, datos)}
@@ -2623,6 +2676,10 @@ function seedMarcas() {
 }
 function seedFabricas() {
   return [];
+}
+// Corridas de talla más usadas, como punto de partida
+function seedCorridas() {
+  return ['S-XL', 'S-XXL', 'XS-4XL', '28-38', '30-40', '2-4-6-8', '10-12-14-16', 'Talla única'];
 }
 // Ciudades base agrupadas por origen (para filtrar el selector según el país activo)
 const CIUDADES_POR_ORIGEN = {
@@ -4816,7 +4873,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
   );
 }
 
-function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, corridas = [], onRegistrarCorrida, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [supplierId, setSupplierId] = useState(borrador?.supplierId || suppliers[0]?.id || '');
   const [items, setItems] = useState(borrador?.items || []);
@@ -5298,6 +5355,8 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
               tasaCambio={tasaCambio}
               origen={origen}
               proveedorActivo={suppliers.find((s) => s.id === supplierId) || null}
+              corridas={corridas}
+              onRegistrarCorrida={onRegistrarCorrida}
               pedidoMode={true}
               usuarioActivoNombre={usuarioActivoNombre}
               usuarioActivoPrefijo={usuarioActivoPrefijo}
@@ -5436,7 +5495,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
                     <p className="text-sm truncate">{it.descripcion}</p>
                     <p className="text-xs text-app-dim">
                       <span className="font-mono text-app-gold">{codigoConDestino(it)}</span>
-                      {it.destino ? ` ${destinoInfo(it.destino).emoji}` : ''}{it.subtipo ? ` (${it.subtipo})` : ''} · {sumVariantes(it.variantes)} pzs
+                      {it.destino ? ` ${destinoInfo(it.destino).emoji}` : ''}{it.subtipo ? ` (${it.subtipo})` : ''}{it.corrida ? ` · Corrida ${it.corrida}` : ''} · {sumVariantes(it.variantes)} pzs
                     </p>
                   </div>
                   <span className="text-xs text-app-dim2 shrink-0">{fmtMoneda(itemTotal(it), it.costoMoneda)}</span>
@@ -5586,6 +5645,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarPro
         rows.push({
           Código: codigoConDestino(it), Destino: nombreDestino(it), Origen: nombreOrigen(it.origen || order.origen),
           Descripción: it.descripcion, Marca: it.marca || '', Departamento: it.departamento, Tipo: it.tipo, Subtipo: it.subtipo || '',
+          Corrida: it.corrida || '',
           Talla: v.cintura ? '' : v.talla, Cintura: v.cintura || '', Largo: v.largo || '',
           Color: v.color, Cantidad: v.cantidad,
           'Costo unitario': it.costoMonto, Moneda: it.costoMoneda, Subtotal: v.cantidad * it.costoMonto,
@@ -5964,7 +6024,7 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarPro
                         <p className="text-sm font-mono truncate">{it.descripcion}</p>
                         <p className="text-xs text-app-dim">
                           <span className="font-mono text-app-gold">{codigoConDestino(it)}</span>
-                          {it.subtipo ? ` (${it.subtipo})` : ''} · {sumVariantes(it.variantes)} pzs{it.marca ? ` · ${it.marca}` : ''}
+                          {it.subtipo ? ` (${it.subtipo})` : ''}{it.corrida ? ` · Corrida ${it.corrida}` : ''} · {sumVariantes(it.variantes)} pzs{it.marca ? ` · ${it.marca}` : ''}
                         </p>
                       </div>
                       <p className="text-xs text-app-gold shrink-0">{fmtMoneda(itemTotal(it), it.costoMoneda)}</p>
@@ -6347,10 +6407,26 @@ function SearchableSelect({ id, value, onChange, options, placeholder, openId, s
 }
 
 // ---------- Formulario de producto (reutilizable: catálogo y pedido) ----------
-function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], ciudadPorDefecto = '', onSetCiudadPorDefecto, fabricas = [], factores, tasaCambio, onSave, onCancel, onUpdateTipos, onCreateMarca, onCreateFabrica, onCreateCiudad, origen, proveedorActivo = null, pedidoMode = false, initialCodigo = '', usuarioActivoNombre = '', usuarioActivoPrefijo = '', numeroInicioCorrelativo = '', title = 'Nuevo producto' }) {
+function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [], ciudades = [], ciudadPorDefecto = '', onSetCiudadPorDefecto, fabricas = [], factores, tasaCambio, onSave, onCancel, onUpdateTipos, onCreateMarca, onCreateFabrica, onCreateCiudad, corridas = [], onRegistrarCorrida, origen, proveedorActivo = null, pedidoMode = false, initialCodigo = '', usuarioActivoNombre = '', usuarioActivoPrefijo = '', numeroInicioCorrelativo = '', title = 'Nuevo producto' }) {
   // Unidad en la que cotiza y pide este proveedor (por unidad o por docena)
   const unidad = unidadCompraDe(proveedorActivo);
   const esDocena = unidad.id === 'docena';
+
+  // Sugerencias de corrida: primero las guardadas por los compradores,
+  // luego los rangos derivados de los grupos de tallas del sistema.
+  const sugerenciasCorrida = React.useMemo(() => {
+    const deGrupos = (GRUPOS_TALLAS || [])
+      .filter((g) => (g.tallas || []).length > 1)
+      .map((g) => `${g.tallas[0]}-${g.tallas[g.tallas.length - 1]}`);
+    const todas = [...(corridas || []), ...deGrupos];
+    const vistas = new Set();
+    return todas.filter((c) => {
+      const k = (c || '').trim().toLowerCase();
+      if (!k || vistas.has(k)) return false;
+      vistas.add(k);
+      return true;
+    }).slice(0, 12);
+  }, [corridas]);
   const monedaOrigen = origen?.id === 'china' ? 'RMB' : (origen?.id === 'honduras' ? 'HNL' : 'USD');
   const [form, setForm] = useState({
     ...emptyForm(),
@@ -6529,6 +6605,7 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         colores: esUno ? [colorOrColores] : colorOrColores,
         variantes,
         // Se guarda TAL CUAL lo ingresó el comprador, en la unidad del proveedor.
+        corrida: (form.corrida || '').trim(),
         unidadCompra: unidad.id,
         piezasPorUnidad: unidad.factor,
         // Equivalencias calculadas, para reportes y comparaciones entre proveedores
@@ -6571,6 +6648,11 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         }
       }
       nuevos = [construirProducto(form.colores, variantes)];
+    }
+
+    // Si el comprador escribió una corrida nueva, se guarda en el catálogo global
+    if (sinTalla && (form.corrida || '').trim()) {
+      onRegistrarCorrida?.(form.corrida.trim());
     }
 
     onSave(nuevos);
@@ -6984,6 +7066,41 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
             <div className="flex flex-wrap gap-1.5">
               {tallasDisponibles.map((t) => (
                 <span key={t} className="text-xs bg-app-panel border border-app-line rounded-full px-2.5 py-1 text-app-light">{t}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Corrida de tallas: cuando se pide sin desglosar, sirve para dejar
+          anotado el rango que debe mandar el proveedor (ej. S-XL, 28-38). */}
+      {sinTalla && (
+        <div>
+          <label className="text-xs text-app-dim2 uppercase tracking-wide mb-1 flex items-center justify-between">
+            <span>Corrida de tallas</span>
+            <span className="normal-case tracking-normal text-app-dim">(opcional)</span>
+          </label>
+          <input
+            value={form.corrida || ''}
+            onChange={(e) => setForm((f) => ({ ...f, corrida: e.target.value }))}
+            placeholder="Ej: S-XL, 28-38, 2-4-6-8"
+            className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm"
+          />
+          {sugerenciasCorrida.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {sugerenciasCorrida.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, corrida: c }))}
+                  className={`text-xs rounded-lg px-2 py-1 border ${
+                    (form.corrida || '') === c
+                      ? 'bg-app-gold text-app-bg border-app-gold font-medium'
+                      : 'bg-app-panel border border-app-line text-app-dim2'
+                  }`}
+                >
+                  {c}
+                </button>
               ))}
             </div>
           )}
@@ -9263,6 +9380,7 @@ function PanelAuditoria({ soyAdmin }) {
   const [filas, setFilas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
+  const [buscando, setBuscando] = useState(false);
   const [filtroTabla, setFiltroTabla] = useState('');
 
   const cargar = useCallback(async () => {
