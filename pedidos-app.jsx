@@ -6412,20 +6412,20 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
   const unidad = unidadCompraDe(proveedorActivo);
   const esDocena = unidad.id === 'docena';
 
-  // Sugerencias de corrida: primero las guardadas por los compradores,
-  // luego los rangos derivados de los grupos de tallas del sistema.
-  const sugerenciasCorrida = React.useMemo(() => {
+  // Opciones de corrida: las guardadas por los compradores más los rangos
+  // derivados de los grupos de tallas. SearchableSelect se encarga de filtrar
+  // y de poner las usadas recientemente al principio.
+  const opcionesCorrida = React.useMemo(() => {
     const deGrupos = (GRUPOS_TALLAS || [])
       .filter((g) => (g.tallas || []).length > 1)
       .map((g) => `${g.tallas[0]}-${g.tallas[g.tallas.length - 1]}`);
-    const todas = [...(corridas || []), ...deGrupos];
     const vistas = new Set();
-    return todas.filter((c) => {
+    return [...(corridas || []), ...deGrupos].filter((c) => {
       const k = (c || '').trim().toLowerCase();
       if (!k || vistas.has(k)) return false;
       vistas.add(k);
       return true;
-    }).slice(0, 12);
+    });
   }, [corridas]);
   const monedaOrigen = origen?.id === 'china' ? 'RMB' : (origen?.id === 'honduras' ? 'HNL' : 'USD');
   const [form, setForm] = useState({
@@ -7080,30 +7080,34 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
             <span>Corrida de tallas</span>
             <span className="normal-case tracking-normal text-app-dim">(opcional)</span>
           </label>
-          <input
-            value={form.corrida || ''}
-            onChange={(e) => setForm((f) => ({ ...f, corrida: e.target.value }))}
-            placeholder="Ej: S-XL, 28-38, 2-4-6-8"
-            className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm"
-          />
-          {sugerenciasCorrida.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-1.5">
-              {sugerenciasCorrida.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setForm((f) => ({ ...f, corrida: c }))}
-                  className={`text-xs rounded-lg px-2 py-1 border ${
-                    (form.corrida || '') === c
-                      ? 'bg-app-gold text-app-bg border-app-gold font-medium'
-                      : 'bg-app-panel border border-app-line text-app-dim2'
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="relative">
+            <SearchableSelect
+              id="corrida"
+              openId={openFieldId}
+              setOpenId={setOpenFieldId}
+              value={form.corrida || ''}
+              onChange={(v) => setForm((f) => ({ ...f, corrida: v }))}
+              options={opcionesCorrida}
+              placeholder="Buscar o agregar corrida… (ej: S-XL, 28-38)"
+              recentKey="corrida"
+              onCreate={(nueva) => {
+                const limpio = (nueva || '').trim();
+                if (!limpio) return;
+                onRegistrarCorrida?.(limpio);
+                setForm((f) => ({ ...f, corrida: limpio }));
+              }}
+            />
+            {form.corrida && (
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, corrida: '' }))}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-app-dim active:text-app-red p-1"
+                aria-label="Quitar corrida"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
       )}
 
