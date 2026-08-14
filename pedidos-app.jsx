@@ -681,6 +681,17 @@ function crearMiniatura(file, ancho = ANCHO_MINIATURA) {
 async function subirFoto(file, codigoProducto = 'sin-codigo') {
   if (!supabase) throw new Error('Supabase no está configurado');
 
+  // Validaciones básicas: que sea imagen de verdad y de tamaño razonable.
+  // Sin esto, un archivo de 100 MB o un PDF renombrado se subían igual.
+  const MAX_FOTO_MB = 10;
+  if (!file.type || !file.type.startsWith('image/')) {
+    throw new Error('El archivo no es una imagen. Usa JPG, PNG o HEIC.');
+  }
+  if (file.size > MAX_FOTO_MB * 1024 * 1024) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    throw new Error(`La foto pesa ${mb} MB y el máximo es ${MAX_FOTO_MB} MB. Usa una más liviana.`);
+  }
+
   const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
   const sello = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const carpeta = `${codigoProducto}`.replace(/[^a-zA-Z0-9_-]/g, '_') || 'sin-codigo';
@@ -5833,14 +5844,24 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarPro
     const nombreOrigen = (oid) => (ORIGENES.find((o) => o.id === oid)?.label || oid || '');
     itemsOrdenados.forEach((it) => {
       const enlaceFoto = urlFoto(listaFotos(it)[0], false) || '';
+      // Unidad en la que se capturó este item (unidad o docena).
+      // Se exportan la cifra tal cual Y su equivalencia en piezas,
+      // para que nadie lea 12 docenas como 12 piezas.
+      const uItem = UNIDADES_COMPRA.find((u) => u.id === (it.unidadCompra || 'unidad')) || UNIDADES_COMPRA[0];
+      const esDz = uItem.id === 'docena';
       (it.variantes || []).forEach((v) => {
         rows.push({
           Código: codigoConDestino(it), Destino: nombreDestino(it), Origen: nombreOrigen(it.origen || order.origen),
           Descripción: it.descripcion, Marca: it.marca || '', Departamento: it.departamento, Tipo: it.tipo, Subtipo: it.subtipo || '',
           Corrida: it.corrida || '',
           Talla: v.cintura ? '' : v.talla, Cintura: v.cintura || '', Largo: v.largo || '',
-          Color: v.color, Cantidad: v.cantidad,
-          'Costo unitario': it.costoMonto, Moneda: it.costoMoneda, Subtotal: v.cantidad * it.costoMonto,
+          Color: v.color,
+          Unidad: esDz ? 'Docena (12 pzs)' : 'Pieza',
+          Cantidad: v.cantidad,
+          'Piezas totales': aPiezas(v.cantidad, uItem),
+          'Costo docena': esDz ? it.costoMonto : '',
+          'Costo por pieza': esDz ? aCostoUnitario(it.costoMonto, uItem) : it.costoMonto,
+          Moneda: it.costoMoneda, Subtotal: v.cantidad * it.costoMonto,
           'Venta HNL': it.ventaLempiras ?? '',
           Ciudad: it.ciudad || '', Fábrica: it.fabrica || '',
           Foto: enlaceFoto ? 'Ver foto' : '',
@@ -7888,7 +7909,15 @@ function Catalogo({ products = [], setProducts, departamentos = [], tipos = [], 
   }, {});
   const marcasOrdenadas = Object.keys(grupos).sort((a, b) => a.localeCompare(b));
 
-  const removeProduct = (id) => setProducts(products.filter((p) => p.id !== id));
+  const removeProduct = (id) => {
+    // Antes de quitar el producto del catálogo, se borran sus fotos del
+    // bucket; si no, quedan huérfanas ocupando espacio para siempre.
+    const producto = products.find((p) => p.id === id);
+    if (producto) {
+      listaFotos(producto).forEach((foto) => { borrarFoto(foto); });
+    }
+    setProducts(products.filter((p) => p.id !== id));
+  };
 
   const saveEdit = (updated) => {
     setProducts(products.map((p) => (p.id === updated.id ? updated : p)));
