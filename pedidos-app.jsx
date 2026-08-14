@@ -1797,10 +1797,34 @@ function EscanerCodigo({ onDetectado, onCerrar }) {
       // Carga diferida de la librería de lectura
       if (!lectorRef.current) {
         const { BrowserMultiFormatReader } = await import('@zxing/browser');
-        lectorRef.current = new BrowserMultiFormatReader();
+        const { DecodeHintType, BarcodeFormat } = await import('@zxing/library');
+        // Afinación para detección inmediata:
+        // - Solo los formatos que usamos (menos trabajo por cuadro)
+        // - TRY_HARDER: lee códigos torcidos o con poco contraste
+        // - Intentos cada 60 ms en vez del medio segundo por defecto
+        const pistas = new Map();
+        pistas.set(DecodeHintType.POSSIBLE_FORMATS, [
+          BarcodeFormat.CODE_128, BarcodeFormat.CODE_39,
+          BarcodeFormat.EAN_13, BarcodeFormat.EAN_8,
+          BarcodeFormat.UPC_A, BarcodeFormat.UPC_E,
+          BarcodeFormat.ITF, BarcodeFormat.QR_CODE,
+        ]);
+        pistas.set(DecodeHintType.TRY_HARDER, true);
+        lectorRef.current = new BrowserMultiFormatReader(pistas, {
+          delayBetweenScanAttempts: 60,
+          delayBetweenScanSuccess: 400,
+        });
       }
-      const controles = await lectorRef.current.decodeFromVideoDevice(
-        deviceId || undefined,
+      // Pedir video en alta resolución: los códigos de barras necesitan
+      // detalle fino; con 640x480 las rayas se empastan.
+      const restricciones = {
+        audio: false,
+        video: deviceId
+          ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+          : { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+      };
+      const controles = await lectorRef.current.decodeFromConstraints(
+        restricciones,
         videoRef.current,
         (resultado) => { if (resultado) alDetectar(resultado.getText()); }
       );
