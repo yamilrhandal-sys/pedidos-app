@@ -172,6 +172,69 @@ const SESION_KEY = 'pedidos:sesion'; // storage PERSONAL: recuerda el usuario de
 const ULTIMO_USUARIO_KEY = 'pedidos:ultimo'; // storage PERSONAL: último usuario que entró (sobrevive a logout)
 const MODO_KEY = 'pedidos:modo';     // storage PERSONAL: 'auto' | 'movil' — preferencia de vista
 
+// ------------------------------------------------------------
+// TABLA PEDIDOS — una fila por pedido.
+// Antes vivían todos juntos en app_state['pedidos:orders'], lo que
+// hacía que dos personas guardando a la vez se borraran entre sí.
+// Con una fila por pedido, cada quien escribe solo lo suyo y el
+// RLS de Supabase decide qué filas ve cada rol.
+// ------------------------------------------------------------
+async function cargarPedidosTabla() {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('pedidos')
+    .select('data')
+    .order('created_at', { ascending: false });
+  if (error) {
+    console.error('No se pudieron cargar los pedidos:', error);
+    return [];
+  }
+  return (data || []).map((r) => r.data).filter(Boolean);
+}
+
+// Compara la lista anterior con la nueva y aplica SOLO las diferencias:
+// inserta los pedidos nuevos, actualiza los que cambiaron y borra los
+// que ya no están. Devuelve las operaciones que fallaron, para reintentar.
+async function guardarDiferenciasPedidos(anterior, nuevo) {
+  if (!supabase) return [];
+  const antes = new Map((anterior || []).map((o) => [o.id, o]));
+  const despues = new Map((nuevo || []).map((o) => [o.id, o]));
+  const fallidas = [];
+
+  for (const [id, pedido] of despues) {
+    const previo = antes.get(id);
+    if (!previo) {
+      // Nuevo: el correo del creador lo pone la base con auth.email()
+      const { error } = await supabase.from('pedidos').insert({
+        id,
+        numero: pedido.numero || null,
+        origen: pedido.origen || null,
+        supplier_id: pedido.supplierId || null,
+        data: pedido,
+      });
+      if (error) { console.error('insertar pedido', id, error); fallidas.push({ op: 'insert', pedido }); }
+    } else if (JSON.stringify(previo) !== JSON.stringify(pedido)) {
+      // Cambió: se actualiza el contenido pero NUNCA el creador
+      const { error } = await supabase.from('pedidos').update({
+        numero: pedido.numero || null,
+        origen: pedido.origen || null,
+        supplier_id: pedido.supplierId || null,
+        data: pedido,
+        updated_at: new Date().toISOString(),
+      }).eq('id', id);
+      if (error) { console.error('actualizar pedido', id, error); fallidas.push({ op: 'update', pedido }); }
+    }
+  }
+
+  for (const [id] of antes) {
+    if (!despues.has(id)) {
+      const { error } = await supabase.from('pedidos').delete().eq('id', id);
+      if (error) { console.error('borrar pedido', id, error); fallidas.push({ op: 'delete', pedido: { id } }); }
+    }
+  }
+  return fallidas;
+}
+
 async function loadShared(key, fallback) {
   try {
     const res = await window.storage.get(key, true);
@@ -2001,7 +2064,7 @@ function PedidosAppInterno() {
       const [p, s, o, d, t, mc, emp, embs, mcp, tc, ci, fa, pr, us, fac, bo, oc, corr, sesion, modoGuardado, ultimoUsuario] = await Promise.all([
         loadShared(KEYS.products, seedProducts()),
         loadShared(KEYS.suppliers, seedSuppliers()),
-        loadShared(KEYS.orders, []),
+        cargarPedidosTabla(),
         loadShared(KEYS.departamentos, seedDepartamentos()),
         loadShared(KEYS.tipos, seedTipos()),
         loadShared(KEYS.marcas, seedMarcas()),
@@ -2056,6 +2119,7 @@ function PedidosAppInterno() {
   const [pendienteSync, setPendienteSync] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
   const pendingRef = useRef(new Map()); // key -> último valor sin guardar
+  const pendingPedidosRef = useRef([]);  // operaciones de la tabla pedidos sin confirmar
 
   // Guarda con tolerancia a fallos: si no hay conexión (o falla), encola y reintenta después
   const guardarConCola = useCallback(async (key, value) => {
@@ -2085,8 +2149,12 @@ function PedidosAppInterno() {
 
   // Reintenta guardar todo lo pendiente
   const sincronizar = useCallback(async () => {
-    if (pendingRef.current.size === 0) { setPendienteSync(false); return; }
+    const hayAppState = pendingRef.current.size > 0;
+    const hayPedidos = pendingPedidosRef.current.length > 0;
+    if (!hayAppState && !hayPedidos) { setPendienteSync(false); return; }
     setSincronizando(true);
+
+    // Claves de app_state pendientes
     const entradas = [...pendingRef.current.entries()];
     for (const [key, value] of entradas) {
       try {
@@ -2094,8 +2162,36 @@ function PedidosAppInterno() {
         pendingRef.current.delete(key);
       } catch (e) { /* sigue pendiente */ }
     }
+
+    // Operaciones de pedidos pendientes
+    if (supabase && pendingPedidosRef.current.length > 0) {
+      const pendientes = [...pendingPedidosRef.current];
+      pendingPedidosRef.current = [];
+      for (const { op, pedido } of pendientes) {
+        try {
+          if (op === 'delete') {
+            const { error } = await supabase.from('pedidos').delete().eq('id', pedido.id);
+            if (error) throw error;
+          } else {
+            // Para insert y update por igual: upsert que no toca al creador
+            const { error } = await supabase.from('pedidos').upsert({
+              id: pedido.id,
+              numero: pedido.numero || null,
+              origen: pedido.origen || null,
+              supplier_id: pedido.supplierId || null,
+              data: pedido,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'id' });
+            if (error) throw error;
+          }
+        } catch (e) {
+          pendingPedidosRef.current.push({ op, pedido });
+        }
+      }
+    }
+
     setSincronizando(false);
-    setPendienteSync(pendingRef.current.size > 0);
+    setPendienteSync(pendingRef.current.size > 0 || pendingPedidosRef.current.length > 0);
   }, []);
 
   // Detectar cambios de conexión y reintentar periódicamente
@@ -2105,7 +2201,7 @@ function PedidosAppInterno() {
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     const intervalo = setInterval(() => {
-      if (navigator.onLine && pendingRef.current.size > 0) sincronizar();
+      if (navigator.onLine && (pendingRef.current.size > 0 || pendingPedidosRef.current.length > 0)) sincronizar();
     }, 30000);
     return () => {
       window.removeEventListener('online', onOnline);
@@ -2134,13 +2230,21 @@ function PedidosAppInterno() {
     });
     guardarConCola(KEYS.suppliers, next);
   }, [guardarConCola, actorAuditoria]);
+  // Guarda en la tabla pedidos aplicando solo las diferencias.
+  // Si alguna operación falla (sin conexión, permiso), queda en
+  // pendingPedidosRef y el ciclo de sincronización la reintenta.
   const persistOrders = useCallback((next) => {
     setOrders((prev) => {
       registrarAuditoria('pedidos', prev, next, actorAuditoria(), (o) => `Pedido ${o.numero || o.id}`);
+      guardarDiferenciasPedidos(prev, next).then((fallidas) => {
+        if (fallidas.length > 0) {
+          pendingPedidosRef.current.push(...fallidas);
+          setPendienteSync(true);
+        }
+      });
       return next;
     });
-    guardarConCola(KEYS.orders, next);
-  }, [guardarConCola, actorAuditoria]);
+  }, [actorAuditoria]);
   const persistOrdenesCompra = useCallback((next) => {
     setOrdenesCompra((prev) => {
       registrarAuditoria('ordenes_compra', prev, next, actorAuditoria(), (oc) => `OC ${oc.numero}`);
