@@ -1754,6 +1754,148 @@ function CapturaCamara({ onUsarFoto, onCerrar }) {
 }
 
 // ============================================================
+// ESCÁNER DE CÓDIGOS — lee códigos de barras (Code128, EAN, UPC)
+// y QR usando la cámara. La librería @zxing se carga solo cuando
+// se abre el escáner, para no engordar la carga inicial de la app.
+// ============================================================
+function EscanerCodigo({ onDetectado, onCerrar }) {
+  const videoRef = useRef(null);
+  const lectorRef = useRef(null);
+  const controlesRef = useRef(null);
+  const [camaras, setCamaras] = useState([]);
+  const [camaraId, setCamaraId] = useState('');
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState('');
+
+  const detener = useCallback(() => {
+    try { controlesRef.current?.stop(); } catch { /* ignorar */ }
+    controlesRef.current = null;
+  }, []);
+
+  const alDetectar = useCallback((texto) => {
+    // Aviso táctil/sonoro de que se leyó bien
+    try { navigator.vibrate?.(80); } catch { /* ignorar */ }
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      gain.gain.value = 0.08;
+      osc.start();
+      setTimeout(() => { osc.stop(); ctx.close(); }, 120);
+    } catch { /* sin sonido, no pasa nada */ }
+    detener();
+    onDetectado(texto);
+  }, [detener, onDetectado]);
+
+  const iniciar = useCallback(async (deviceId) => {
+    setError('');
+    setCargando(true);
+    detener();
+    try {
+      // Carga diferida de la librería de lectura
+      if (!lectorRef.current) {
+        const { BrowserMultiFormatReader } = await import('@zxing/browser');
+        lectorRef.current = new BrowserMultiFormatReader();
+      }
+      const controles = await lectorRef.current.decodeFromVideoDevice(
+        deviceId || undefined,
+        videoRef.current,
+        (resultado) => { if (resultado) alDetectar(resultado.getText()); }
+      );
+      controlesRef.current = controles;
+      // Enumerar cámaras después de obtener permiso
+      const dispositivos = await navigator.mediaDevices.enumerateDevices();
+      const videos = dispositivos.filter((d) => d.kind === 'videoinput');
+      setCamaras(videos);
+      if (deviceId) setCamaraId(deviceId);
+    } catch (err) {
+      const nombre = err?.name || '';
+      if (nombre === 'NotAllowedError') setError('Permiso de cámara denegado. Actívalo en los ajustes del navegador.');
+      else if (nombre === 'NotFoundError') setError('No se encontró ninguna cámara.');
+      else setError('No se pudo abrir el escáner: ' + (err?.message || nombre || 'error desconocido'));
+    } finally {
+      setCargando(false);
+    }
+  }, [alDetectar, detener]);
+
+  useEffect(() => {
+    iniciar();
+    return () => detener();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-lg bg-app-panel border border-app-line rounded-2xl overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-app-line">
+          <span className="text-sm font-semibold text-app-text flex items-center gap-2">
+            <Search size={15} className="text-app-gold" /> Escanear código
+          </span>
+          <button onClick={() => { detener(); onCerrar(); }} className="text-app-dim3 hover:text-app-text" aria-label="Cerrar">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="relative bg-black flex items-center justify-center" style={{ minHeight: '240px' }}>
+          {error ? (
+            <div className="p-6 text-center">
+              <AlertCircle size={24} className="text-app-red mx-auto mb-2" />
+              <p className="text-sm text-app-dim2">{error}</p>
+            </div>
+          ) : (
+            <>
+              <video ref={videoRef} playsInline muted autoPlay className="max-h-[50vh] w-full object-contain" />
+              {/* Guía visual de encuadre */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-3/4 h-24 border-2 border-app-gold/70 rounded-lg" />
+              </div>
+              {cargando && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+                  <span className="text-xs text-app-dim2">Abriendo cámara…</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {!error && camaras.length > 1 && (
+          <div className="px-4 pt-3">
+            <select
+              value={camaraId}
+              onChange={(e) => iniciar(e.target.value)}
+              className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm"
+            >
+              {camaras.map((d, i) => (
+                <option key={d.deviceId || i} value={d.deviceId}>
+                  {/iphone|continuity|continuidad/i.test(d.label || '') ? `📱 ${d.label}` : (d.label || `Cámara ${i + 1}`)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div className="p-4 flex gap-2">
+          {error ? (
+            <button onClick={() => iniciar(camaraId)} className="flex-1 py-2.5 rounded-lg bg-app-gold text-app-bg text-sm font-semibold">
+              Reintentar
+            </button>
+          ) : (
+            <p className="flex-1 text-xs text-app-dim3 text-center self-center">
+              Apunta al código de barras o QR de la etiqueta. Se llena solo al detectarlo.
+            </p>
+          )}
+          <button onClick={() => { detener(); onCerrar(); }} className="px-4 py-2.5 rounded-lg border border-app-line text-sm text-app-dim2">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // SELECTOR DE FOTOS — reemplaza el área "Tomar foto o elegir".
 // Mantiene intacta la subida por archivo y añade la cámara.
 // ============================================================
@@ -5060,6 +5202,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   const [showNewProduct, setShowNewProduct] = useState(false);
   const [showImportExcel, setShowImportExcel] = useState(false);
   const [generandoTemplate, setGenerandoTemplate] = useState(false);
+  const [escanerBusqueda, setEscanerBusqueda] = useState(false);
   const [codigoInicio, setCodigoInicio] = useState(borrador?.codigoInicio || ''); // número de inicio del correlativo (solo China)
   const [embarcadorId, setEmbarcadorId] = useState(borrador?.embarcadorId || ''); // compañía de embarque (USA/Panamá)
   const [ciudadPorDefecto, setCiudadPorDefecto] = useState(borrador?.ciudadPorDefecto || ''); // ciudad elegida en el primer artículo
@@ -5459,7 +5602,24 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
               className="w-full bg-app-panel border border-app-line rounded-xl pl-9 pr-3 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
             />
           </div>
+          <button
+            type="button"
+            onClick={() => setEscanerBusqueda(true)}
+            className="px-3.5 rounded-xl border border-app-line text-app-gold active:bg-app-active"
+            title="Escanear código para buscar"
+          >
+            <Camera size={17} />
+          </button>
         </div>
+        {escanerBusqueda && (
+          <EscanerCodigo
+            onCerrar={() => setEscanerBusqueda(false)}
+            onDetectado={(texto) => {
+              setEscanerBusqueda(false);
+              setQuery(sanitizarCodigo(texto));
+            }}
+          />
+        )}
 
         {!showNewProduct && !showImportExcel ? (
           <div className="mt-2 flex flex-col gap-1.5">
@@ -6658,6 +6818,7 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
   // Por defecto los productos se capturan SIN talla (surtido). El comprador
   // presiona "Por talla" solo cuando necesita desglosar por talla.
   const [sinTalla, setSinTalla] = useState(true);
+  const [escanerAbierto, setEscanerAbierto] = useState(false);
   const [tallasOverride, setTallasOverride] = useState(null); // grupo de tallas elegido para ESTE producto (null = usa las del tipo)
   const [matrix, setMatrix] = useState({});       // cantidades del pedido (solo en pedidoMode)
   const [qtySinTalla, setQtySinTalla] = useState({}); // cantidades sin talla por color
@@ -6999,6 +7160,14 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
             onChange={(e) => { setCodigoEditado(true); setForm({ ...form, codigo: e.target.value.replace(/\s+/g, '-') }); }}
             className="flex-1 bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm font-mono"
           />
+          <button
+            type="button"
+            onClick={() => setEscanerAbierto(true)}
+            className="px-3 rounded-lg border border-app-line text-app-gold text-sm active:bg-app-active"
+            title="Escanear código de barras o QR"
+          >
+            <Camera size={16} />
+          </button>
           {origen?.id === 'china' && (
             <button
               type="button"
@@ -7012,6 +7181,16 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         </div>
         {origen?.id === 'china' && (
           <p className="text-xs text-app-dim mt-1">Correlativo automático: Y + año + mes + número</p>
+        )}
+        {escanerAbierto && (
+          <EscanerCodigo
+            onCerrar={() => setEscanerAbierto(false)}
+            onDetectado={(texto) => {
+              setEscanerAbierto(false);
+              setCodigoEditado(true);
+              setForm((f) => ({ ...f, codigo: sanitizarCodigo(texto) }));
+            }}
+          />
         )}
       </div>
 
