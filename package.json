@@ -13,7 +13,9 @@
     "lucide-react": "^1.26.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.4",
