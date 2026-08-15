@@ -183,13 +183,17 @@ async function cargarPedidosTabla() {
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('pedidos')
-    .select('data')
+    .select('data, creado_por_email')
     .order('created_at', { ascending: false });
   if (error) {
     console.error('No se pudieron cargar los pedidos:', error);
     return [];
   }
-  return (data || []).map((r) => r.data).filter(Boolean);
+  // El correo de la fila es la identidad estable del creador: el nombre
+  // en data.creadoPor es solo un texto de ese momento y puede variar.
+  return (data || [])
+    .map((r) => r.data ? { ...r.data, creadoPorEmail: r.data.creadoPorEmail || r.creado_por_email || '' } : null)
+    .filter(Boolean);
 }
 
 // Compara la lista anterior con la nueva y aplica SOLO las diferencias:
@@ -2807,7 +2811,7 @@ function PedidosAppInterno() {
               let acumulado = [...orders];
               const marcados = arr.map((o) => {
                 const numero = generarNumeroPedido(acumulado, origenActivo.id);
-                const pedido = { ...o, origen: origenActivo.id, numero, creadoPor: usuarioActivo?.nombre || '' };
+                const pedido = { ...o, origen: origenActivo.id, numero, creadoPor: usuarioActivo?.nombre || '', creadoPorEmail: (usuarioActivo?.email || sesionAuth?.user?.email || '').toLowerCase() };
                 acumulado = [pedido, ...acumulado]; // para que el siguiente pedido del batch tome el siguiente número
                 return pedido;
               });
@@ -2969,6 +2973,7 @@ function PedidosAppInterno() {
           <Reportes
             orders={orders}
             suppliers={suppliers}
+            usuarios={usuarios}
             tasaCambio={tasaCambio}
             factores={factores}
           />
@@ -3711,7 +3716,7 @@ function DetalleOC({ oc, suppliers = [], empresa, onBack, onEliminar }) {
   );
 }
 
-function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
+function Reportes({ orders = [], suppliers = [], usuarios = [], tasaCambio, factores }) {
   const [rangoFecha, setRangoFecha] = useState('all'); // all | 30d | 90d | 12m | custom
   const [fechaDesde, setFechaDesde] = useState('');
   const [fechaHasta, setFechaHasta] = useState('');
@@ -3832,7 +3837,19 @@ function Reportes({ orders = [], suppliers = [], tasaCambio, factores }) {
   };
 
   const porProveedor = acum((o) => (suppliers.find((s) => s.id === o.supplierId)?.nombre) || 'Sin proveedor');
-  const porComprador = acum((o) => o.creadoPor || 'Sin comprador');
+  // Un mismo comprador puede aparecer con nombres distintos en pedidos
+  // viejos ("yamil" vs "Yamil Handal"). El correo no cambia: se agrupa
+  // por correo y se muestra el nombre actual del catálogo de usuarios.
+  const nombrePorEmail = new Map(
+    (usuarios || [])
+      .filter((u) => u.email)
+      .map((u) => [u.email.trim().toLowerCase(), u.nombre])
+  );
+  const porComprador = acum((o) => {
+    const email = (o.creadoPorEmail || '').trim().toLowerCase();
+    if (email) return nombrePorEmail.get(email) || o.creadoPor || email.split('@')[0];
+    return o.creadoPor || 'Sin comprador';
+  });
   const porMarca = acum((o, it) => it.marca || 'Sin marca');
   const porDepto = acum((o, it) => it.departamento || 'Sin depto');
   const porTipo = acum((o, it) => it.tipo || 'Sin tipo');
