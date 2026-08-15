@@ -4934,8 +4934,22 @@ function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], orige
           Object.entries(fila).forEach(([k, v]) => {
             limpia[k.replace(/\s*\(.*?\)\s*$/, '').trim()] = v;
           });
+          // Tolerancia extra con el precio: si el encabezado no quedó
+          // exactamente como "Precio USD", tomar cualquier columna que
+          // empiece con "Precio" (Precio, Precio USD, Precio Unitario…).
+          if (limpia['Precio USD'] === undefined || limpia['Precio USD'] === '') {
+            const kPrecio = Object.keys(limpia).find((k) => /^precio/i.test(k.trim()));
+            if (kPrecio) limpia['Precio USD'] = limpia[kPrecio];
+          }
           return limpia;
         });
+        // Si ninguna fila trae precio, avisar de inmediato en vez de
+        // importar todo en $0.00 sin que nadie lo note.
+        const hayColumnaPrecio = crudos.length > 0 &&
+          Object.keys(crudos[0]).some((k) => /^precio/i.test(k.trim()));
+        if (!hayColumnaPrecio) {
+          setErrorMsg('⚠️ No se encontró la columna de precio en el archivo. Verifica que exista un encabezado que empiece con "Precio".');
+        }
         const mapeadas = datos
           .filter(r => {
             const cod = String(r['Código'] || r['Codigo'] || r['codigo'] || '').trim();
