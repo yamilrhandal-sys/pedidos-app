@@ -4924,7 +4924,18 @@ function ImportarDesdeExcel({ marcas = [], departamentos = [], tipos = [], orige
       try {
         const wb = XLSX.read(ev.target.result, { type: 'array' });
         const ws = wb.Sheets['PEDIDO'] || wb.Sheets[wb.SheetNames[0]];
-        const datos = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        const crudos = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        // Los encabezados del template llevan la unidad entre paréntesis
+        // — "Precio USD (docena)", "Cant. Honduras (dz)" — según el
+        // proveedor. Aquí se normalizan quitando el paréntesis para que
+        // el importador encuentre las columnas sin importar la variante.
+        const datos = crudos.map((fila) => {
+          const limpia = {};
+          Object.entries(fila).forEach(([k, v]) => {
+            limpia[k.replace(/\s*\(.*?\)\s*$/, '').trim()] = v;
+          });
+          return limpia;
+        });
         const mapeadas = datos
           .filter(r => {
             const cod = String(r['Código'] || r['Codigo'] || r['codigo'] || '').trim();
