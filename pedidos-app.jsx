@@ -840,6 +840,8 @@ async function registrarAuditoriaObjeto(tabla, anterior, nuevo, actor, resumen) 
 function urlFoto(foto, preferirMiniatura = true) {
   if (!foto) return null;
   if (typeof foto === 'string') return foto;
+  // Foto recién tomada, aún subiendo: se muestra la copia local al instante
+  if (foto.urlLocal) return foto.urlLocal;
   return (preferirMiniatura ? foto.thumb : foto.url) || foto.url || null;
 }
 
@@ -2851,6 +2853,21 @@ function PedidosAppInterno() {
             }}
             hayBorradorPendiente={!!(borradorVisible?.items?.length > 0)}
             borradorAjenoBloquea={borradorAjenoBloquea}
+            onEliminar={!soyAdmin ? undefined : async (motivo) => {
+              try {
+                await supabase?.from('auditoria').insert({
+                  tabla: 'pedidos',
+                  accion: 'eliminar',
+                  resumen: `Pedido ${activeOrder.numero || activeOrder.id} eliminado por admin`,
+                  detalle: { motivo, pedido: activeOrder },
+                  usuario_email: usuarioActivo?.email || sesionAuth?.user?.email || null,
+                  usuario_nombre: usuarioActivo?.nombre || null,
+                });
+              } catch (e) { console.error('No se pudo registrar la eliminación:', e); }
+              persistOrders(orders.filter((o) => o.id !== activeOrder.id));
+              setActiveOrderId(null);
+              setView('pedidos');
+            }}
             onDuplicar={() => {
               // Copia los artículos y el proveedor a un pedido nuevo (borrador) y lo abre
               guardarBorrador(origenActivo.id, {
@@ -5394,6 +5411,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
   // lo expande con las cantidades/colores actuales y hace scroll hasta él.
   // Estado del modal de edición de un artículo ya en el pedido
   const [itemEditando, setItemEditando] = useState(null);   // el item que se está editando
+  const [productoEditando, setProductoEditando] = useState(null); // edición completa del producto (fotos, marca, etc.)
   const [editMatrix, setEditMatrix] = useState({});
   const [editPrecio, setEditPrecio] = useState('');
 
@@ -5602,7 +5620,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
         // ¿El número escrito ya existe en otro producto?
         let yaExiste = false;
         if (!isNaN(numInicio) && numInicio > 0) {
-          const codigoCompleto = `${prefijo}${String(numInicio).padStart(5, '0')}`;
+          const codigoCompleto = `${prefijo}${String(numInicio).padStart(4, '0')}`;
           yaExiste = products.some((p) => {
             const base = (p.codigoBase || p.codigo || '').trim();
             // Comparar la parte base (sin color ni destino)
@@ -5610,7 +5628,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
           });
         }
         const preview = !isNaN(numInicio) && numInicio > 0
-          ? `${prefijo}${String(numInicio).padStart(5, '0')}`
+          ? `${prefijo}${String(numInicio).padStart(4, '0')}`
           : null;
         return (
           <div>
@@ -5920,6 +5938,19 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
             {items.map((it) => (
               <div key={`${it.productId}-${it.destino || 'H'}`} className="bg-app-panel border border-app-line rounded-xl p-3">
                 <div className="flex items-center gap-3">
+                  {/* Miniatura: si falta la foto se ve el ícono tachado de inmediato */}
+                  {listaFotos(it).length > 0 ? (
+                    <img
+                      src={urlFoto(listaFotos(it)[0], true) || urlFoto(listaFotos(it)[0], false)}
+                      alt=""
+                      className="w-11 h-11 rounded-lg object-cover border border-app-line shrink-0 cursor-pointer"
+                      onClick={() => setVisor({ fotos: listaFotos(it), titulo: it.descripcion || it.codigo })}
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-lg bg-app-bg border border-dashed border-app-line3 flex items-center justify-center shrink-0" title="Sin foto">
+                      <ImageOff size={14} className="text-app-dim3" />
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm truncate">{it.descripcion}</p>
                     <p className="text-xs text-app-dim">
@@ -5927,7 +5958,13 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
                       {it.destino ? ` ${destinoInfo(it.destino).emoji}` : ''}{it.subtipo ? ` (${it.subtipo})` : ''}{it.corrida ? ` · Corrida ${it.corrida}` : ''} · {sumVariantes(it.variantes)} pzs
                     </p>
                   </div>
-                  <span className="text-xs text-app-dim2 shrink-0">{fmtMoneda(itemTotal(it), it.costoMoneda)}</span>
+                  <div className="text-right shrink-0">
+                    <p className="text-xs text-app-dim2">{fmtMoneda(itemTotal(it), it.costoMoneda)}</p>
+                    <p className="text-[11px] text-app-dim3">
+                      {sumVariantes(it.variantes)} × {fmtMoneda(it.costoMonto, it.costoMoneda)}
+                      {(it.unidadCompra === 'docena') ? ' /dz' : ' c/u'}
+                    </p>
+                  </div>
                   <button
                     onClick={() => editarItemDelPedido(it)}
                     className="text-app-sky shrink-0 active:opacity-70"
@@ -5984,6 +6021,53 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
         />
       )}
 
+      {/* Edición completa del producto sin salir del pedido */}
+      {productoEditando && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 overflow-y-auto p-4"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1rem)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}
+        >
+          <div className="max-w-2xl mx-auto">
+            <EditProductForm
+              product={productoEditando}
+              products={products}
+              departamentos={departamentos}
+              tipos={tipos}
+              marcas={marcasPriorizadas}
+              ciudades={ciudades}
+              fabricas={fabricas}
+              onUpdateTipos={setTipos}
+              onCancel={() => setProductoEditando(null)}
+              onSave={(actualizado) => {
+                // 1. Guardar en el catálogo
+                setProducts((prev) => (prev || []).map((pp) => pp.id === actualizado.id ? { ...pp, ...actualizado } : pp));
+                // 2. Copiar los campos descriptivos a los items de este pedido
+                //    (las cantidades no se tocan: esas se editan en el artículo)
+                setItems((prev) => prev.map((x) => x.productId === actualizado.id ? {
+                  ...x,
+                  codigo: actualizado.codigo,
+                  descripcion: actualizado.descripcion,
+                  departamento: actualizado.departamento,
+                  tipo: actualizado.tipo,
+                  subtipo: actualizado.subtipo || '',
+                  corrida: actualizado.corrida || '',
+                  marca: actualizado.marca,
+                  genero: actualizado.genero,
+                  ciudad: actualizado.ciudad,
+                  fabrica: actualizado.fabrica,
+                  costoMonto: actualizado.costoMonto,
+                  costoMoneda: actualizado.costoMoneda,
+                  ventaLempiras: actualizado.ventaLempiras,
+                  foto: actualizado.foto,
+                  fotos: actualizado.fotos,
+                } : x));
+                setProductoEditando(null);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {itemEditando && (() => {
         const prod = products.find((p) => p.id === itemEditando.productId);
         const esCL = prod?.medida === 'cintura_largo' || (itemEditando.variantes || []).some((v) => v.cintura);
@@ -6010,6 +6094,16 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+              {/* Acceso a la edición completa: foto, descripción, marca, corrida… */}
+              {prod && (
+                <button
+                  type="button"
+                  onClick={() => { setProductoEditando(prod); setItemEditando(null); }}
+                  className="w-full py-2.5 rounded-xl border border-dashed border-app-gold/60 text-sm text-app-gold flex items-center justify-center gap-2 active:bg-app-panel"
+                >
+                  <Pencil size={14} /> Editar producto completo (foto, descripción, marca…)
+                </button>
+              )}
               <div>
                 <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">
                   Precio unitario ({itemEditando.costoMoneda || 'USD'})
@@ -6048,7 +6142,10 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
 }
 
 // ---------- Detalle pedido ----------
-function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarProveedor, tasaCambio, setTasaCambio, onDuplicar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
+function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarProveedor, tasaCambio, setTasaCambio, onDuplicar, onEliminar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
+  // Eliminación (solo admin): requiere escribir el motivo
+  const [confirmEliminar, setConfirmEliminar] = useState(false);
+  const [motivoEliminar, setMotivoEliminar] = useState('');
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   const [confirmDuplicar, setConfirmDuplicar] = useState(false);
   const [pdfHtml, setPdfHtml] = useState(null);   // documento a mostrar
@@ -6610,6 +6707,50 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarPro
         </div>
       )}
 
+      {/* Eliminar pedido — visible SOLO para el administrador.
+          El motivo es obligatorio y queda grabado en la auditoría. */}
+      {onEliminar && (
+        <div className="pt-1">
+          {!confirmEliminar ? (
+            <button
+              onClick={() => setConfirmEliminar(true)}
+              className="w-full py-3 rounded-xl border border-app-red/40 text-sm font-medium text-app-red flex items-center justify-center gap-2 active:bg-app-panel"
+            >
+              <Trash2 size={16} /> Eliminar pedido completo
+            </button>
+          ) : (
+            <div className="bg-app-redbg border border-app-red/40 rounded-xl p-3 space-y-2">
+              <p className="text-xs text-app-red2 font-medium">
+                Esta acción borra el pedido {order.numero || ''} de forma permanente.
+              </p>
+              <textarea
+                value={motivoEliminar}
+                onChange={(e) => setMotivoEliminar(e.target.value)}
+                rows={2}
+                placeholder="Motivo de la eliminación (obligatorio)…"
+                className="w-full bg-app-bg border border-app-line rounded-lg px-3 py-2 text-sm resize-none"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setConfirmEliminar(false); setMotivoEliminar(''); }}
+                  className="flex-1 py-2 rounded-lg border border-app-line text-xs text-app-dim2"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => { onEliminar(motivoEliminar.trim()); }}
+                  disabled={motivoEliminar.trim().length < 5}
+                  className="flex-1 py-2 rounded-lg bg-app-red text-white text-xs font-semibold disabled:opacity-40"
+                  title={motivoEliminar.trim().length < 5 ? 'Escribe el motivo (mínimo 5 letras)' : ''}
+                >
+                  Eliminar definitivamente
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {visor && (
         <VisorFotos
           fotos={visor.fotos}
@@ -6645,8 +6786,8 @@ function prefijoCorrelativo(nombreComprador, prefijoComprador) {
   return `${inicial}${anio}${mes}`;
 }
 
-// Código correlativo: Y (comprador) + año 2 dígitos + mes + correlativo de 5 dígitos
-// Ejemplo en julio 2026: Y26600001, Y26600002…
+// Código correlativo: Y (comprador) + año 2 dígitos + mes + correlativo de 4 dígitos
+// Ejemplo en agosto 2026: Y2670001, Y2670002…
 // Si se pasa `numeroInicio`, el correlativo arranca desde ahí (si está libre); de lo
 // contrario sigue automático desde el último número usado con ese prefijo.
 function generarCodigoCorrelativo(products, nombreComprador, prefijoComprador, numeroInicio) {
@@ -6668,9 +6809,9 @@ function generarCodigoCorrelativo(products, nombreComprador, prefijoComprador, n
   if (!isNaN(inicio) && inicio > 0) {
     let n = inicio;
     while (usados.has(n)) n++; // saltar los ya ocupados
-    return `${prefijo}${String(n).padStart(5, '0')}`;
+    return `${prefijo}${String(n).padStart(4, '0')}`;
   }
-  return `${prefijo}${String(max + 1).padStart(5, '0')}`;
+  return `${prefijo}${String(max + 1).padStart(4, '0')}`;
 }
 
 const GENEROS = ['Ho.', 'Da.', 'No.', 'Na.', 'Be.'];
@@ -6890,6 +7031,7 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
   const [qtySinTalla, setQtySinTalla] = useState({}); // cantidades sin talla por color
   const [destinoPedido, setDestinoPedido] = useState('H'); // destino del pedido (solo pedidoMode)
   const [productoYaCreado, setProductoYaCreado] = useState(false); // en pedidoMode, tras guardar el producto no se recrea
+  const [ultimosCreados, setUltimosCreados] = useState([]); // artículos del último guardado, para calcular el siguiente correlativo
   const [feedbackPedidoMode, setFeedbackPedidoMode] = useState(''); // mensaje temporal de confirmación
 
   // Limpiar feedback tras 2 segundos
@@ -6939,19 +7081,38 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
   // Recibe archivos ya listos (del selector de archivos o de la cámara)
   const handleArchivos = async (archivos) => {
     if (!archivos?.length) return;
-    setSubiendoFotos(true);
     setErrorFoto('');
+    // 1. Mostrar cada foto AL INSTANTE con una copia local, marcada
+    //    como "subiendo". La subida real corre en segundo plano.
+    const pendientes = archivos.map((file) => ({
+      file,
+      marcador: {
+        idLocal: uid(),
+        urlLocal: URL.createObjectURL(file),
+        subiendo: true,
+      },
+    }));
+    setForm((f) => ({ ...f, fotos: [...(f.fotos || []), ...pendientes.map((p) => p.marcador)] }));
+    setSubiendoFotos(true);
     try {
-      const subidas = [];
-      for (const file of archivos) {
+      for (const { file, marcador } of pendientes) {
         try {
-          subidas.push(await subirFoto(file, form.codigo));
+          const subida = await subirFoto(file, form.codigo);
+          // Reemplazar la copia local por la foto real ya subida
+          setForm((f) => ({
+            ...f,
+            fotos: (f.fotos || []).map((x) => x.idLocal === marcador.idLocal ? subida : x),
+          }));
         } catch (err) {
+          // Falló la subida: quitar la vista previa y avisar
+          setForm((f) => ({
+            ...f,
+            fotos: (f.fotos || []).filter((x) => x.idLocal !== marcador.idLocal),
+          }));
           setErrorFoto(`No se pudo subir "${file.name}": ${err.message || err}`);
+        } finally {
+          URL.revokeObjectURL(marcador.urlLocal);
         }
-      }
-      if (subidas.length) {
-        setForm((f) => ({ ...f, fotos: [...(f.fotos || []), ...subidas] }));
       }
     } finally {
       setSubiendoFotos(false);
@@ -7054,8 +7215,10 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         costoMonto: parseFloat(form.costoMonto),
         costoMoneda: form.costoMoneda,
         ventaLempiras: parseFloat(form.ventaLempiras),
-        foto: form.fotos?.[0] ? urlFoto(form.fotos[0], false) : null,
-        fotos: form.fotos || [],
+        // Solo fotos ya subidas: una vista previa local (blob:) no sirve
+        // fuera de esta pantalla y moriría al recargar.
+        foto: (form.fotos || []).find((x) => !x.subiendo) ? urlFoto((form.fotos || []).find((x) => !x.subiendo), false) : null,
+        fotos: (form.fotos || []).filter((x) => !x.subiendo),
         destinoPedido: pedidoMode ? destinoPedido : undefined,
       };
     };
@@ -7103,6 +7266,10 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
       setProductoYaCreado(true);
       setMatrix({});
       setQtySinTalla({});
+      // Guardar los códigos recién usados para que "Siguiente artículo"
+      // calcule el correlativo contando también estos (el prop `products`
+      // del padre tarda un instante en actualizarse).
+      setUltimosCreados(nuevos);
       // Cambiar automáticamente al otro destino para agilizar la captura
       const otroDestino = destinoPedido === 'H' ? 'G' : 'H';
       setDestinoPedido(otroDestino);
@@ -7189,12 +7356,17 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
         {(form.fotos || []).length > 0 && (
           <div className="grid grid-cols-3 gap-2">
             {(form.fotos || []).map((foto, i) => (
-              <div key={foto.path || i} className="relative aspect-square">
+              <div key={foto.path || foto.idLocal || i} className="relative aspect-square">
                 <img
                   src={urlFoto(foto)}
                   alt={`Foto ${i + 1}`}
-                  className="w-full h-full object-cover rounded-lg border border-app-line"
+                  className={`w-full h-full object-cover rounded-lg border border-app-line ${foto.subiendo ? 'opacity-60' : ''}`}
                 />
+                {foto.subiendo && (
+                  <span className="absolute bottom-1 left-1 right-1 text-center text-[10px] bg-app-bg-80 rounded px-1 py-0.5 text-app-gold">
+                    Subiendo…
+                  </span>
+                )}
                 <button
                   onClick={() => quitarFoto(i)}
                   className="absolute top-1 right-1 bg-app-bg-80 rounded-full p-1"
@@ -7744,12 +7916,50 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
               : 'Guardar producto'}
         </button>
         {pedidoMode && productoYaCreado && (
-          <button
-            onClick={onCancel}
-            className="px-4 py-2.5 rounded-lg border border-app-line text-app-dim2 text-sm"
-          >
-            Finalizar
-          </button>
+          <>
+            <button
+              onClick={() => {
+                // Preparar el formulario para el SIGUIENTE artículo:
+                // se conserva lo que suele repetirse en la misma compra
+                // (ciudad, fábrica, marca, departamento, tipo, moneda)
+                // y se limpia lo propio del artículo anterior.
+                const catalogo = [...(products || []), ...ultimosCreados];
+                const siguiente = origen?.id === 'china'
+                  ? generarCodigoCorrelativo(catalogo, usuarioActivoNombre, usuarioActivoPrefijo, numeroInicioCorrelativo) + 'H'
+                  : '';
+                setForm((f) => ({
+                  ...f,
+                  codigo: siguiente,
+                  descripcion: '',
+                  subtipo: '',
+                  corrida: '',
+                  colores: [],
+                  colorInput: '',
+                  costoMonto: '',
+                  ventaLempiras: '',
+                  fotos: [],
+                  foto: null,
+                }));
+                setMatrix({});
+                setQtySinTalla({});
+                setDestinoPedido('H');
+                setProductoYaCreado(false);
+                setCodigoEditado(false);
+                setErrorFoto('');
+                setFeedbackPedidoMode('');
+                setUltimosCreados([]);
+              }}
+              className="px-4 py-2.5 rounded-lg bg-app-sky text-app-bg text-sm font-semibold"
+            >
+              ➕ Siguiente
+            </button>
+            <button
+              onClick={onCancel}
+              className="px-4 py-2.5 rounded-lg border border-app-line text-app-dim2 text-sm"
+            >
+              Finalizar
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -7805,19 +8015,38 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
   // Recibe archivos ya listos (del selector de archivos o de la cámara)
   const handleArchivos = async (archivos) => {
     if (!archivos?.length) return;
-    setSubiendoFotos(true);
     setErrorFoto('');
+    // 1. Mostrar cada foto AL INSTANTE con una copia local, marcada
+    //    como "subiendo". La subida real corre en segundo plano.
+    const pendientes = archivos.map((file) => ({
+      file,
+      marcador: {
+        idLocal: uid(),
+        urlLocal: URL.createObjectURL(file),
+        subiendo: true,
+      },
+    }));
+    setForm((f) => ({ ...f, fotos: [...(f.fotos || []), ...pendientes.map((p) => p.marcador)] }));
+    setSubiendoFotos(true);
     try {
-      const subidas = [];
-      for (const file of archivos) {
+      for (const { file, marcador } of pendientes) {
         try {
-          subidas.push(await subirFoto(file, form.codigo));
+          const subida = await subirFoto(file, form.codigo);
+          // Reemplazar la copia local por la foto real ya subida
+          setForm((f) => ({
+            ...f,
+            fotos: (f.fotos || []).map((x) => x.idLocal === marcador.idLocal ? subida : x),
+          }));
         } catch (err) {
+          // Falló la subida: quitar la vista previa y avisar
+          setForm((f) => ({
+            ...f,
+            fotos: (f.fotos || []).filter((x) => x.idLocal !== marcador.idLocal),
+          }));
           setErrorFoto(`No se pudo subir "${file.name}": ${err.message || err}`);
+        } finally {
+          URL.revokeObjectURL(marcador.urlLocal);
         }
-      }
-      if (subidas.length) {
-        setForm((f) => ({ ...f, fotos: [...(f.fotos || []), ...subidas] }));
       }
     } finally {
       setSubiendoFotos(false);
@@ -7872,8 +8101,8 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
       costoMonto: parseFloat(form.costoMonto),
       costoMoneda: form.costoMoneda,
       ventaLempiras: parseFloat(form.ventaLempiras),
-      foto: form.fotos?.[0] ? urlFoto(form.fotos[0], false) : null,
-      fotos: form.fotos || [],
+      foto: (form.fotos || []).find((x) => !x.subiendo) ? urlFoto((form.fotos || []).find((x) => !x.subiendo), false) : null,
+      fotos: (form.fotos || []).filter((x) => !x.subiendo),
     });
   };
 
@@ -7936,12 +8165,17 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
         {(form.fotos || []).length > 0 && (
           <div className="grid grid-cols-3 gap-2">
             {(form.fotos || []).map((foto, i) => (
-              <div key={foto.path || i} className="relative aspect-square">
+              <div key={foto.path || foto.idLocal || i} className="relative aspect-square">
                 <img
                   src={urlFoto(foto)}
                   alt={`Foto ${i + 1}`}
-                  className="w-full h-full object-cover rounded-lg border border-app-line"
+                  className={`w-full h-full object-cover rounded-lg border border-app-line ${foto.subiendo ? 'opacity-60' : ''}`}
                 />
+                {foto.subiendo && (
+                  <span className="absolute bottom-1 left-1 right-1 text-center text-[10px] bg-app-bg-80 rounded px-1 py-0.5 text-app-gold">
+                    Subiendo…
+                  </span>
+                )}
                 <button
                   onClick={() => quitarFoto(i)}
                   className="absolute top-1 right-1 bg-app-bg-80 rounded-full p-1"
