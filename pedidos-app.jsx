@@ -7147,6 +7147,9 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
     if (!form.departamento) return setError('Selecciona un departamento.');
     // Marca: obligatoria para USA/Panamá/Honduras, opcional para China
     if ((origen?.id === 'usa' || origen?.id === 'panama' || origen?.id === 'honduras') && !form.marca) return setError('Selecciona una marca.');
+    if ((form.fotos || []).some((x) => x.subiendo)) {
+      return setError('La foto aún se está subiendo — espera un instante y vuelve a guardar.');
+    }
     if (!form.tipo && !sinTalla) return setError('Selecciona un tipo de producto.');
     if ((form.colores || []).length === 0) return setError('Agrega al menos un color.');
     if (!form.costoMonto) return setError('Captura el precio de costo.');
@@ -8107,6 +8110,10 @@ function EditProductForm({ product, products = [], departamentos = [], tipos = [
       ? matrixCLToVariantes(matrix).filter((v) => v.color === form.color)
       : matrixToVariantes(matrix).filter((v) => v.color === form.color);
 
+    if ((form.fotos || []).some((x) => x.subiendo)) {
+      alert('La foto aún se está subiendo — espera un instante y vuelve a guardar.');
+      return;
+    }
     onSave({
       ...product,
       codigo: sanitizarCodigo(form.codigo),
