@@ -7164,6 +7164,31 @@ function ProductForm({ products = [], departamentos = [], tipos = [], marcas = [
           return products.some((p) => (p.codigo || '').trim().toLowerCase() === codigoColor.toLowerCase());
         });
         if (conflictos.length > 0) return setError(`Ya existen: ${conflictos.map((c) => `${codigoBase}-${c}`).join(', ')}`);
+
+        // El mismo NÚMERO de correlativo no puede nombrar dos estilos
+        // distintos: Y2670061H y Y2670061G deben ser el MISMO artículo
+        // (la letra solo indica el destino). Si el número ya pertenece a
+        // otro estilo, se bloquea y se pide tomar el siguiente código.
+        const nucleo = codigoBase.replace(/[HG]$/i, '');
+        if (nucleo) {
+          const otroEstilo = (products || []).find((p) => {
+            const baseP = ((p.codigoBase || p.codigo || '').split('-')[0] || '').trim();
+            if (baseP.replace(/[HG]$/i, '').toLowerCase() !== nucleo.toLowerCase()) return false;
+            // Mismo estilo = mismo tipo + marca + subtipo → permitido
+            // (es la captura del otro destino del mismo artículo)
+            const mismoEstilo =
+              (p.tipo || '') === (form.tipo || '') &&
+              (p.marca || '') === (form.marca || '') &&
+              (p.subtipo || '') === (form.subtipo || '');
+            return !mismoEstilo;
+          });
+          if (otroEstilo) {
+            return setError(
+              `El número ${nucleo} ya pertenece a otro estilo: «${otroEstilo.descripcion || otroEstilo.codigo}». ` +
+              `Cada estilo lleva su propio número — presiona ➕ Siguiente o borra el código para tomar el que sigue.`
+            );
+          }
+        }
       } else {
         // USA/Panamá/Honduras: un solo producto con todos los colores, código único
         if (products.some((p) => (p.codigo || '').trim().toLowerCase() === codigoBase.toLowerCase())) {
