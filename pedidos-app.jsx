@@ -2238,6 +2238,7 @@ function PedidosAppInterno() {
   const [tasaCambio, setTasaCambio] = useState({ rmbUsd: 7.25 });
 
   const [activeOrderId, setActiveOrderId] = useState(null);
+  const [pedidoEnEdicion, setPedidoEnEdicion] = useState(null); // pedido creado que se está editando en NuevoPedido
 
   useEffect(() => {
     // Los datos compartidos viven en Supabase y requieren sesión iniciada.
@@ -2801,12 +2802,39 @@ function PedidosAppInterno() {
             corridas={corridas}
             onRegistrarCorrida={registrarCorrida}
             origen={origenActivo}
-            borrador={borradorVisible}
+            borrador={pedidoEnEdicion ? {
+              supplierId: pedidoEnEdicion.supplierId,
+              items: pedidoEnEdicion.items,
+              notas: pedidoEnEdicion.notas || '',
+              embarcadorId: pedidoEnEdicion.embarcadorId || '',
+              codigoInicio: '',
+            } : borradorVisible}
+            modoEdicion={!!pedidoEnEdicion}
+            numeroPedidoEditando={pedidoEnEdicion?.numero || ''}
             onGuardarBorrador={(datos) => guardarBorrador(origenActivo.id, datos)}
             usuarioActivoNombre={usuarioActivo?.nombre || ''}
             usuarioActivoPrefijo={usuarioActivo?.prefijo || ''}
-            onCancel={() => setView('pedidos')}
+            onCancel={() => { setPedidoEnEdicion(null); setView(pedidoEnEdicion ? 'detalle' : 'pedidos'); }}
             onCreate={(pedidosNuevos) => {
+              // ¿Se está EDITANDO un pedido ya creado? → actualizar, no crear.
+              // Se conservan número, fecha, creador y estado originales.
+              if (pedidoEnEdicion) {
+                const cambios = Array.isArray(pedidosNuevos) ? pedidosNuevos[0] : pedidosNuevos;
+                const next = orders.map((o) => o.id === pedidoEnEdicion.id ? {
+                  ...o,
+                  supplierId: cambios.supplierId,
+                  embarcadorId: cambios.embarcadorId ?? o.embarcadorId,
+                  notas: cambios.notas,
+                  items: cambios.items,
+                  editadoEn: new Date().toISOString(),
+                  editadoPor: usuarioActivo?.nombre || '',
+                } : o);
+                persistOrders(next);
+                setActiveOrderId(pedidoEnEdicion.id);
+                setPedidoEnEdicion(null);
+                setView('detalle');
+                return;
+              }
               // pedidosNuevos puede ser un solo pedido o un array (cuando se separan por destino)
               const arr = Array.isArray(pedidosNuevos) ? pedidosNuevos : [pedidosNuevos];
               // Asignar correlativo secuencial por origen y año (ej. CN-26-0001)
@@ -2868,6 +2896,20 @@ function PedidosAppInterno() {
               setActiveOrderId(null);
               setView('pedidos');
             }}
+            onEditar={(() => {
+              // Puede editar: el admin siempre; el creador mientras el
+              // pedido no haya sido enviado ni recibido.
+              const miEmail = (usuarioActivo?.email || sesionAuth?.user?.email || '').toLowerCase();
+              const esCreador = activeOrder.creadoPorEmail
+                ? activeOrder.creadoPorEmail === miEmail
+                : activeOrder.creadoPor === usuarioActivo?.nombre;
+              const estadoEditable = !['enviado', 'recibido'].includes(activeOrder.status);
+              if (!(soyAdmin || (esCreador && estadoEditable))) return undefined;
+              return () => {
+                setPedidoEnEdicion(activeOrder);
+                setView('nuevo');
+              };
+            })()}
             onDuplicar={() => {
               // Copia los artículos y el proveedor a un pedido nuevo (borrador) y lo abre
               guardarBorrador(origenActivo.id, {
@@ -5269,7 +5311,7 @@ Ejemplo: ["Jean Slim Azul Talla 32","Camisa Polo Blanca","Blusa Floral Verde S-X
   );
 }
 
-function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, corridas = [], onRegistrarCorrida, origen, borrador, onGuardarBorrador, usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
+function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [], setTipos, marcas = [], marcasProveedores = {}, ciudades = [], fabricas = [], factores, suppliers = [], embarcadores = [], tasaCambio, setTasaCambio, corridas = [], onRegistrarCorrida, origen, borrador, onGuardarBorrador, modoEdicion = false, numeroPedidoEditando = '', usuarioActivoNombre, usuarioActivoPrefijo, onCancel, onCreate, onCreateMarca, onCreateFabrica, onCreateCiudad }) {
   const [visor, setVisor] = useState(null);   // fotos a mostrar en pantalla completa
   // Arranca vacío a propósito: el comprador debe elegir el proveedor de forma
   // consciente, porque de él dependen la unidad de compra y el template.
@@ -5307,6 +5349,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
 
   useEffect(() => {
     if (!onGuardarBorradorRef.current) return;
+    if (modoEdicion) return;   // editar un pedido creado no debe pisar el borrador
     // Solo guardar como borrador si hay artículos capturados (el resto puede tener valores
     // por defecto como supplierId inicial, no es progreso real todavía)
     if (items.length === 0) return;
@@ -5531,6 +5574,18 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
       embarcadorId: esUSAoPanama ? embarcadorId : undefined,
     };
 
+    if (modoEdicion) {
+      // Editar un pedido existente: se entregan los items y datos
+      // actualizados; el padre conserva número, fecha, creador y estado.
+      onCreate({
+        items,
+        supplierId,
+        notas,
+        embarcadorId: esUSAoPanama ? embarcadorId : undefined,
+      });
+      return;
+    }
+
     if (esChina) {
       // China: un solo pedido con items H y G mezclados (el código lleva la letra)
       onCreate({ id: uid(), items, ...base });
@@ -5557,6 +5612,16 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
 
   return (
     <div className="space-y-4">
+      {modoEdicion && (
+        <div className="bg-app-blue border border-app-line2 rounded-xl px-3 py-2.5">
+          <p className="text-sm text-app-sky font-medium">✏️ Editando el pedido {numeroPedidoEditando}</p>
+          <p className="text-xs text-app-dim2 mt-0.5">
+            Agrega o corrige artículos. Al presionar "Guardar cambios" se
+            actualiza este mismo pedido — no se crea uno nuevo.
+          </p>
+        </div>
+      )}
+
       <div>
         <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">
           Proveedor <span className="text-app-red">*</span>
@@ -6009,7 +6074,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
           disabled={!canCreate}
           className="flex-1 py-3 rounded-xl bg-app-gold text-app-bg text-sm font-semibold disabled:opacity-40 active:scale-95 transition"
         >
-          Crear pedido
+          {modoEdicion ? 'Guardar cambios' : 'Crear pedido'}
         </button>
       </div>
 
@@ -6142,7 +6207,7 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
 }
 
 // ---------- Detalle pedido ----------
-function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarProveedor, tasaCambio, setTasaCambio, onDuplicar, onEliminar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
+function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarProveedor, tasaCambio, setTasaCambio, onDuplicar, onEditar, onEliminar, hayBorradorPendiente, borradorAjenoBloquea = false, empresa, embarcadores = [] }) {
   // Eliminación (solo admin): requiere escribir el motivo
   const [confirmEliminar, setConfirmEliminar] = useState(false);
   const [motivoEliminar, setMotivoEliminar] = useState('');
@@ -6667,6 +6732,18 @@ function DetallePedido({ order, supplier, onBack, onUpdateStatus, onConfirmarPro
           <p className="text-xs text-center text-app-dim2 py-2 bg-app-panel border-t border-app-line">
             En el diálogo de impresión elige <strong>Guardar como PDF</strong> para tener el archivo.
           </p>
+        </div>
+      )}
+
+      {/* Editar pedido — agregar estilos que faltaron o corregir artículos */}
+      {onEditar && (
+        <div className="pt-1">
+          <button
+            onClick={onEditar}
+            className="w-full py-3 rounded-xl border border-app-gold/50 text-sm font-medium text-app-gold flex items-center justify-center gap-2 active:bg-app-panel"
+          >
+            <Pencil size={16} /> Editar pedido (agregar o corregir artículos)
+          </button>
         </div>
       )}
 
