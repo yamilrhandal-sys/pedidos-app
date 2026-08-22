@@ -6104,12 +6104,20 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
               onUpdateTipos={setTipos}
               onCancel={() => setProductoEditando(null)}
               onSave={(actualizado) => {
-                // 1. Guardar en el catálogo
-                setProducts((prev) => (prev || []).map((pp) => pp.id === actualizado.id ? { ...pp, ...actualizado } : pp));
+                const codigoAnterior = productoEditando.codigo;
+                // 1. Guardar en el catálogo (si se había borrado, se re-agrega)
+                setProducts((prev) => {
+                  const lista = prev || [];
+                  const existe = lista.some((pp) => pp.id === actualizado.id);
+                  return existe
+                    ? lista.map((pp) => pp.id === actualizado.id ? { ...pp, ...actualizado } : pp)
+                    : [...lista, actualizado];
+                });
                 // 2. Copiar los campos descriptivos a los items de este pedido
                 //    (las cantidades no se tocan: esas se editan en el artículo)
-                setItems((prev) => prev.map((x) => x.productId === actualizado.id ? {
+                setItems((prev) => prev.map((x) => (x.productId === actualizado.id || (!x.productId && x.codigo === codigoAnterior)) ? {
                   ...x,
+                  productId: actualizado.id,
                   codigo: actualizado.codigo,
                   descripcion: actualizado.descripcion,
                   departamento: actualizado.departamento,
@@ -6159,16 +6167,43 @@ function NuevoPedido({ products = [], setProducts, departamentos = [], tipos = [
               </button>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-              {/* Acceso a la edición completa: foto, descripción, marca, corrida… */}
-              {prod && (
-                <button
-                  type="button"
-                  onClick={() => { setProductoEditando(prod); setItemEditando(null); }}
-                  className="w-full py-2.5 rounded-xl border border-dashed border-app-gold/60 text-sm text-app-gold flex items-center justify-center gap-2 active:bg-app-panel"
-                >
-                  <Pencil size={14} /> Editar producto completo (foto, descripción, marca…)
-                </button>
-              )}
+              {/* Acceso a la edición completa: foto, descripción, marca, corrida…
+                  Si el producto ya no está en el catálogo (se borró en alguna
+                  limpieza), se reconstruye desde el artículo para poder editarlo. */}
+              <button
+                type="button"
+                onClick={() => {
+                  const it = itemEditando;
+                  const base = prod || {
+                    id: it.productId || uid(),
+                    codigo: it.codigo,
+                    descripcion: it.descripcion || '',
+                    departamento: it.departamento || '',
+                    tipo: it.tipo || '',
+                    subtipo: it.subtipo || '',
+                    corrida: it.corrida || '',
+                    marca: it.marca || '',
+                    genero: it.genero || '',
+                    ciudad: it.ciudad || '',
+                    fabrica: it.fabrica || '',
+                    costoMonto: it.costoMonto,
+                    costoMoneda: it.costoMoneda || 'USD',
+                    ventaLempiras: it.ventaLempiras ?? null,
+                    foto: it.foto || null,
+                    fotos: listaFotos(it),
+                    origen: it.origen || origen?.id || '',
+                    medida: 'simple',
+                    tallas: [],
+                    colores: [...new Set((it.variantes || []).map((v) => v.color).filter(Boolean))],
+                    variantes: it.variantes || [],
+                  };
+                  setProductoEditando(base);
+                  setItemEditando(null);
+                }}
+                className="w-full py-2.5 rounded-xl border border-dashed border-app-gold/60 text-sm text-app-gold flex items-center justify-center gap-2 active:bg-app-panel"
+              >
+                <Pencil size={14} /> Editar producto completo (foto, descripción, marca…)
+              </button>
               <div>
                 <label className="text-xs uppercase tracking-wide text-app-dim2 mb-1.5 block">
                   Precio unitario ({itemEditando.costoMoneda || 'USD'})
